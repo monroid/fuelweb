@@ -13,6 +13,11 @@ BUILD_DIR:=$(abspath $(BUILD_DIR))
 LOCAL_MIRROR?=$(TOP_DIR)/local_mirror
 LOCAL_MIRROR:=$(abspath $(LOCAL_MIRROR))
 
+MASTER_IP?=10.20.0.2
+MASTER_DNS?=10.20.0.1
+MASTER_NETMASK?=255.255.255.0
+MASTER_GW?=10.20.0.1
+
 COMMIT_SHA:=$(shell git rev-parse --verify HEAD)
 PRODUCT_VERSION:=3.1
 FUEL_COMMIT_SHA:=$(shell cd fuel && git rev-parse --verify HEAD)
@@ -119,9 +124,9 @@ REQUIRED_SRCS:=$(shell grep -v ^\\s*\# $(SOURCE_DIR)/requirements-src.txt)
 REQ_RHEL_RPMS:=$(shell grep -v "^\\s*\#" $(SOURCE_DIR)/fuel/deployment/puppet/rpmcache/files/required-rpms.txt)
 REQ_FUEL_RHEL_RPMS:=$(shell grep -v "^\\s*\#" $(SOURCE_DIR)/fuel/deployment/puppet/rpmcache/files/req-fuel-rhel.txt)
 
-OSTF_PLUGIN_SHA?=1743b3665efd943106fabd3289d4ed54b0a63ea9
+OSTF_PLUGIN_SHA?=f1c7870793a3aa724673c30391d3255a0d9465d5
 OSTF_PLUGIN_VER?=0.2
-OSTF_TESTS_SHA?=3bc6bfe827870c04e7dd7fe4bc30cb5217b11173
+OSTF_TESTS_SHA?=1cac0902c3dd4e98a470e4d4326777a1da8834eb
 OSTF_TESTS_VER?=0.1
 
 # Which repositories to use for making local centos mirror.

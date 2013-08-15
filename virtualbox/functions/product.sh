@@ -91,10 +91,28 @@ enable_outbound_network_for_product_vm() {
 	return 1
     fi
 
+    # Check host nameserver configuration
+    echo -n "Checking local DNS configuration... "
+    if [ -f /etc/resolv.conf ]; then
+      nameserver="$(grep '^nameserver' /etc/resolv.conf | grep -v 'nameserver\s\s*127.' | head -3)"
+    fi
+    if [ -z "$nameserver" -a -x /usr/bin/nmcli ]; then
+      # Get DNS from network manager
+      if [ -n "`LANG=C nmcli nm | grep \"running\s\+connected\"`" ]; then
+        nameserver="$(nmcli dev list | grep 'IP[46].DNS' | sed -e 's/IP[46]\.DNS\[[0-9]\+\]:\s\+/nameserver /'| grep -v 'nameserver\s\s*127.' | head -3)"
+      fi
+    fi
+    if [ -z "$nameserver" ]; then
+      echo "/etc/resolv.conf does not contain a nameserver. Using 8.8.8.8 for DNS."
+      nameserver="nameserver 8.8.8.8"
+    else
+      echo "OK"
+    fi
+
     # Enable internet access on inside the VMs
     echo -n "Enabling outbound network/internet access for the product VM... "
 
-    # Log in into the VM, bring up the NAT interface, set default gateway, check internet connectivity
+    # Log in into the VM, configure and bring up the NAT interface, set default gateway, check internet connectivity
     # Looks a bit ugly, but 'end of expect' has to be in the very beginning of the line 
     result=$(
         expect << ENDOFEXPECT
@@ -103,12 +121,24 @@ enable_outbound_network_for_product_vm() {
         expect "*?assword:*"
         send "$password\r"
         expect "$prompt"
-        send "dhclient eth$interface_id\r"
+        send "file=/etc/sysconfig/network-scripts/ifcfg-eth$interface_id\r"
         expect "$prompt"
-        send "ip route replace default via $gateway_ip dev eth$interface_id\r"
+        send "hwaddr=\\\$(grep HWADDR \\\$file)\r"
         expect "$prompt"
-        send "ping -c 5 google.com || ping -c 5 wikipedia.com\r"
-	expect "$prompt"
+        send "uuid=\\\$(grep UUID \\\$file)\r"
+        expect "$prompt"
+        send "echo -e \"\\\$hwaddr\\n\\\$uuid\\nDEVICE=eth$interface_id\\nTYPE=Ethernet\\nONBOOT=yes\\nNM_CONTROLLED=no\\nBOOTPROTO=dhcp\\nPEERDNS=no\" > \\\$file\r"
+        expect "$prompt"
+        send "sed \"s/GATEWAY=.*/GATEWAY=\"$gateway_ip\"/g\" -i /etc/sysconfig/network\r"
+        expect "$prompt"
+        send "echo -e \"$nameserver\" > /etc/dnsmasq.upstream\r"
+        expect "$prompt"
+        send "service network restart >/dev/null 2>&1\r"
+        expect "$prompt"
+        send "service dnsmasq restart >/dev/null 2>&1\r"
+        expect "$prompt"
+        send "for i in 1 2 3 4 5; do ping -c 2 google.com || ping -c 2 wikipedia.com || sleep 2; done\r"
+        expect "$prompt"
 ENDOFEXPECT
     )
 

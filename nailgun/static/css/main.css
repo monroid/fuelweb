@@ -1033,10 +1033,13 @@ h6.page-title {
 }
 
 .globalalert > p > a,
-.global-error > p > a,
 .global-success > p > a,
 .global-info > p > a {
   color: #00aeef;
+}
+
+.global-error > p > a, .global-error > p > a:hover {
+  color: #0088cc;
 }
 
 .clusterbox {
@@ -1658,6 +1661,10 @@ h6.page-title {
 
 .message-list-popover > .error {
   color: #db4242;
+}
+
+.message-list-popover > .warning {
+  color: #FF9300;
 }
 
 /* Notifications Page */
@@ -3868,12 +3875,34 @@ div.create-cluster-form .radio-checkbox-group label {
   margin-right: 20px;
 }
 
-.releases-table .not_available {
+.releases-table .error {
   color: #ee0000;
+}
+
+.rhel-license-dialog {
+  max-height: 520px;
 }
 
 .rhel-license label {
   text-align: left;
+}
+
+.rhel-license span.help-inline {
+  padding-left: 30px;
+  position: relative;
+  left: -26px;
+}
+
+.rhel-license label.control-label {
+  width: 170px;
+}
+
+.download_progress .progress {
+  background-image: linear-gradient(to bottom, #435267, #aaaaaa);
+  background-image: -webkit-linear-gradient(top, #435267, #aaaaaa);
+  background-image: -moz-linear-gradient(top, #435267, #aaaaaa);
+  background-image: -o-linear-gradient(top, #435267, #aaaaaa);
+  background-image: -ms-linear-gradient(top, #435267, #aaaaaa);
 }
 
 .credentials .radio-checkbox-group {
@@ -3888,6 +3917,26 @@ div.create-cluster-form .radio-checkbox-group label {
   width: 335px;
 }
 
+.releases-table td {
+  height: 30px;
+}
+
+.releases-table .release-name {
+  min-width: 200px;
+}
+
+.releases-table .release-version {
+  width: 100px;
+}
+
+.releases-table .release-status {
+  min-width: 200px;
+}
+
+.releases-table .release-actions {
+  min-width: 120px;
+}
+
 .summary-settings-btn {
   font-size: 13px;
 }
@@ -3899,9 +3948,10 @@ div.create-cluster-form .radio-checkbox-group label {
 .bar-title {
   display: block;
   width: 100%;
-  margin-top: -41px;
+  margin-top: -40px;
   font-size: 11px;
   text-align: center;
+  color: white;
 }
 
 .progress-bar-container {
