@@ -41,7 +41,14 @@ function(utils, models, commonViews, dialogViews, NodesTab, NetworkTab, Settings
         title: function() {
             return this.model.get('name');
         },
-        tabs: ['nodes', 'network', 'settings', 'logs', 'healthcheck', 'actions'],
+        tabs: [
+            {url: 'nodes', title: 'Nodes'},
+            {url: 'network', title: 'Networks'},
+            {url: 'settings', title: 'Settings'},
+            {url: 'logs', title: 'Logs'},
+            {url: 'healthcheck', title: 'Health Check'},
+            {url: 'actions', title: 'Actions'}
+        ],
         updateInterval: 5000,
         template: _.template(clusterPageTemplate),
         events: {

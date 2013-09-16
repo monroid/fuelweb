@@ -19,7 +19,6 @@ module Naily
     def initialize(producer)
       @orchestrator = Astute::Orchestrator.new(nil, log_parsing=true)
       @producer = producer
-      @default_result = {'status' => 'ready', 'progress' => 100}
       @provisionLogParser = Astute::LogParser::ParseProvisionLogs.new
     end
 
@@ -84,19 +83,16 @@ module Naily
       Naily.logger.info("'deploy' method called with data: #{data.inspect}")
 
       reporter = Naily::Reporter.new(@producer, data['respond_to'], data['args']['task_uuid'])
-      @orchestrator.provision(reporter, data['args']['task_uuid'], data['args']['nodes'])
+      @orchestrator.provision(reporter, data['args']['task_uuid'], data['args']['deployment_info'])
 
       begin
-        result = @orchestrator.deploy(
-          reporter, data['args']['task_uuid'], data['args']['nodes'], data['args']['attributes'])
+        @orchestrator.deploy(reporter, data['args']['task_uuid'], data['args']['deployment_info'])
+        reporter.report('status' => 'ready', 'progress' => 100)
       rescue Timeout::Error
         msg = "Timeout of deployment is exceeded."
         Naily.logger.error msg
-        reporter.report({'status' => 'error', 'error' => msg})
-        return
+        reporter.report('status' => 'error', 'error' => msg)
       end
-
-      report_result(result, reporter)
     end
 
     def verify_networks(data)
@@ -130,9 +126,10 @@ module Naily
     end
 
     private
+    
     def report_result(result, reporter)
       result = {} unless result.instance_of?(Hash)
-      status = @default_result.merge(result)
+      status = {'status' => 'ready', 'progress' => 100}.merge(result)
       reporter.report(status)
     end
   end

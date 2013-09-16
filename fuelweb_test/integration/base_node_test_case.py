@@ -21,7 +21,9 @@ from fuelweb_test.helpers import Ebtables
 from fuelweb_test.integration.base_test_case import BaseTestCase
 from fuelweb_test.integration.decorators import debug
 from fuelweb_test.nailgun_client import NailgunClient
-from fuelweb_test.settings import CLEAN, NETWORK_MANAGERS
+from fuelweb_test.settings import CLEAN, NETWORK_MANAGERS, EMPTY_SNAPSHOT, \
+    REDHAT_USERNAME, REDHAT_PASSWORD, REDHAT_SATELLITE_HOST, \
+    REDHAT_ACTIVATION_KEY
 
 logger = logging.getLogger(__name__)
 logwrap = debug(logger)
@@ -30,8 +32,6 @@ logwrap = debug(logger)
 class BaseNodeTestCase(BaseTestCase):
 
     def setUp(self):
-        if CLEAN:
-            self.ci().get_empty_state()
         self.client = NailgunClient(self.get_admin_node_ip())
 
     @logwrap
@@ -99,28 +99,24 @@ class BaseNodeTestCase(BaseTestCase):
 
     @logwrap
     def check_role_file(self, nodes_dict):
-        for node, role in self.get_nailgun_node_roles(nodes_dict):
+        for node, roles in self.get_nailgun_node_roles(nodes_dict):
             remote = SSHClient(
                 node['ip'], username='root', password='r00tme',
                 private_keys=self.get_private_keys())
-            if role != "cinder":
-                self.assertTrue(remote.isfile('/tmp/%s-file' % role))
+            for role in roles:
+                if role != "cinder":
+                    self.assertTrue(remote.isfile('/tmp/%s-file' % role))
 
     @logwrap
     def clean_clusters(self):
         self.client.clean_clusters()
 
     @logwrap
-    def _basic_provisioning(self, cluster_id, nodes_dict, port=5514):
-        self.client.add_syslog_server(
-            cluster_id, self.ci().get_host_node_ip(), port)
-
-        # update cluster deployment mode
-        node_names = []
-        for role in nodes_dict:
-            node_names += nodes_dict[role]
-        if len(node_names) > 1:
-            controller_amount = len(nodes_dict.get('controller', []))
+    def update_deployment_mode(self, cluster_id, nodes_dict):
+        controller_names = filter(
+            lambda x: 'controller' in nodes_dict[x], nodes_dict)
+        if len(nodes_dict) > 1:
+            controller_amount = len(controller_names)
             if controller_amount == 1:
                 self.client.update_cluster(
                     cluster_id,
@@ -128,10 +124,19 @@ class BaseNodeTestCase(BaseTestCase):
             if controller_amount > 1:
                 self.client.update_cluster(cluster_id, {"mode": "ha"})
 
-        self.bootstrap_nodes(self.devops_nodes_by_names(node_names))
-
-        # update nodes in cluster
+    @logwrap
+    def configure_cluster(self, cluster_id, nodes_dict):
+        self.update_deployment_mode(cluster_id, nodes_dict)
         self.update_nodes(cluster_id, nodes_dict, True, False)
+        # TODO: update network configuration
+
+    @logwrap
+    def basic_provisioning(self, cluster_id, nodes_dict, port=5514):
+        self.client.add_syslog_server(
+            cluster_id, self.ci().get_host_node_ip(), port)
+
+        self.bootstrap_nodes(self.devops_nodes_by_names(nodes_dict.keys()))
+        self.configure_cluster(cluster_id, nodes_dict)
 
         task = self.deploy_cluster(cluster_id)
         self.assertTaskSuccess(task)
@@ -139,13 +144,27 @@ class BaseNodeTestCase(BaseTestCase):
         return cluster_id
 
     @logwrap
+    def prepare_environment(self, name='cluster_name', settings={}):
+        if not(self.ci().revert_to_state(settings)):
+            # create cluster
+            self.ci().get_empty_environment()
+            cluster_id = self.create_cluster(name=name)
+            self.basic_provisioning(cluster_id, settings['nodes'])
+            self.ci().snapshot_state(name, settings)
+
+        # return id of last created cluster
+        clusters = self.client.list_clusters()
+        if len(clusters) > 0:
+            return clusters.pop()['id']
+        return None
+
+    @logwrap
     def get_nailgun_node_roles(self, nodes_dict):
         nailgun_node_roles = []
-        for role in nodes_dict:
-            for node_name in nodes_dict[role]:
-                slave = self.ci().environment().node_by_name(node_name)
-                node = self.get_node_by_devops_node(slave)
-                nailgun_node_roles.append((node, role))
+        for node_name in nodes_dict:
+            slave = self.ci().environment().node_by_name(node_name)
+            node = self.get_node_by_devops_node(slave)
+            nailgun_node_roles.append((node, nodes_dict[node_name]))
         return nailgun_node_roles
 
     @logwrap
@@ -162,6 +181,37 @@ class BaseNodeTestCase(BaseTestCase):
         self.assertEquals('error', self._task_wait(task, timeout)['status'])
 
     @logwrap
+    def assertOSTFRunSuccess(self, cluster_id, should_fail=0, should_pass=0,
+                             timeout=10 * 60):
+        set_result_list = self._ostf_test_wait(cluster_id, timeout)
+
+        passed = 0
+        failed = 0
+        for set_result in set_result_list:
+            passed += len(filter(lambda test: test['status'] == 'success',
+                                 set_result['tests']))
+            failed += len(
+                filter(
+                    lambda test: test['status'] == 'failure' or
+                    test['status'] == 'error',
+                    set_result['tests']
+                )
+            )
+        self.assertEqual(passed, should_pass, 'Passed tests')
+        self.assertEqual(failed, should_fail, 'Failed tests')
+
+    @logwrap
+    def run_OSTF(self, cluster_id, test_sets=None,
+                 should_fail=0, should_pass=0):
+        test_sets = test_sets \
+            if test_sets is not None \
+            else ['fuel_smoke', 'fuel_sanity']
+
+        self.client.ostf_run_tests(cluster_id, test_sets)
+        self.assertOSTFRunSuccess(cluster_id, should_fail=should_fail,
+                                  should_pass=should_pass)
+
+    @logwrap
     def _task_wait(self, task, timeout):
         wait(
             lambda: self.client.get_task(
@@ -170,8 +220,21 @@ class BaseNodeTestCase(BaseTestCase):
         return self.client.get_task(task['id'])
 
     @logwrap
+    def _ostf_test_wait(self, cluster_id, timeout):
+        wait(
+            lambda: all([run['status'] == 'finished'
+                         for run in
+                         self.client.get_ostf_test_run(cluster_id)]),
+            timeout=timeout)
+        return self.client.get_ostf_test_run(cluster_id)
+
+    @logwrap
+    def _tasks_wait(self, tasks, timeout):
+        return [self._task_wait(task, timeout) for task in tasks]
+
+    @logwrap
     def _upload_sample_release(self):
-        release_id = self.client.get_grizzly_release_id()
+        release_id = self.client.get_release_id()
         if not release_id:
             raise Exception("Not implemented uploading of release")
         return release_id
@@ -204,15 +267,14 @@ class BaseNodeTestCase(BaseTestCase):
                      pending_addition=True, pending_deletion=False):
         # update nodes in cluster
         nodes_data = []
-        for role in nodes_dict:
-            for node_name in nodes_dict[role]:
-                slave = self.ci().environment().node_by_name(node_name)
-                node = self.get_node_by_devops_node(slave)
-                node_data = {'cluster_id': cluster_id, 'id': node['id'],
-                             'pending_addition': pending_addition,
-                             'pending_deletion': pending_deletion,
-                             'role': role}
-                nodes_data.append(node_data)
+        for node_name in nodes_dict:
+            devops_node = self.ci().environment().node_by_name(node_name)
+            node = self.get_node_by_devops_node(devops_node)
+            node_data = {'cluster_id': cluster_id, 'id': node['id'],
+                         'pending_addition': pending_addition,
+                         'pending_deletion': pending_deletion,
+                         'pending_roles': nodes_dict[node_name]}
+            nodes_data.append(node_data)
 
         # assume nodes are going to be updated for one cluster only
         cluster_id = nodes_data[-1]['cluster_id']
@@ -295,26 +357,39 @@ class BaseNodeTestCase(BaseTestCase):
             timeout=timeout)
 
     @logwrap
+    def _get_remote(self, ip):
+        return SSHClient(ip, username='root', password='r00tme',
+                         private_keys=self.get_private_keys())
+
+    @logwrap
+    def _get_remote_for_node(self, node_name):
+        ip = self.get_node_by_devops_node(
+            self.ci().environment().node_by_name(node_name))['ip']
+        return self._get_remote(ip)
+
+    @logwrap
     def get_cluster_status(self, ip, smiles_count, networks_count=1):
-        remote = SSHClient(ip, username='root', password='r00tme',
-                           private_keys=self.get_private_keys())
+        remote = self._get_remote(ip)
         self.assert_service_list(remote, smiles_count)
         self.assert_glance_index(remote)
         self.assert_network_list(networks_count, remote)
 
     @logwrap
-    def get_cluster_floating_list(self, ip):
-        remote = SSHClient(ip, username='root', password='r00tme',
-                           private_keys=self.get_private_keys())
+    def get_cluster_floating_list(self, node_name):
+        remote = self._get_remote_for_node(node_name)
         ret = remote.check_call('/usr/bin/nova-manage floating list')
         ret_str = ''.join(ret['stdout'])
         return re.findall('(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})', ret_str)
 
     @logwrap
+    def get_cluster_block_devices(self, node_name):
+        remote = self._get_remote_for_node(node_name)
+        ret = remote.check_call('/bin/lsblk')
+        return ''.join(ret['stdout'])
+
+    @logwrap
     def assert_cluster_floating_list(self, node_name, expected_ips):
-        ip = self.get_node_by_devops_node(
-            self.ci().environment().node_by_name(node_name))['ip']
-        current_ips = self.get_cluster_floating_list(ip)
+        current_ips = self.get_cluster_floating_list(node_name)
         self.assertEqual(set(expected_ips), set(current_ips))
 
     @logwrap
@@ -324,6 +399,22 @@ class BaseNodeTestCase(BaseTestCase):
             with self.remote().open(key_string) as f:
                 keys.append(RSAKey.from_private_key(f))
         return keys
+
+    @logwrap
+    def update_node_networks(self, node_id, interfaces_dict):
+        interfaces = self.client.get_node_interfaces(node_id)
+        for interface in interfaces:
+            interface_name = interface['name']
+            interface['assigned_networks'] = []
+            for allowed_network in interface['allowed_networks']:
+                key_exists = interface_name in interfaces_dict
+                if key_exists and \
+                        allowed_network['name'] \
+                        in interfaces_dict[interface_name]:
+                    interface['assigned_networks'].append(allowed_network)
+
+        self.client.put_node_interfaces(
+            [{'id': node_id, 'interfaces': interfaces}])
 
     @logwrap
     def update_vlan_network_fixed(
@@ -338,3 +429,33 @@ class BaseNodeTestCase(BaseTestCase):
             cluster_id,
             networks=network_list,
             net_manager=NETWORK_MANAGERS['vlan'])
+
+    @logwrap
+    def update_redhat_credentials(
+            self, license_type,
+            username=REDHAT_USERNAME, password=REDHAT_PASSWORD,
+            satellite_host=REDHAT_SATELLITE_HOST,
+            activation_key=REDHAT_ACTIVATION_KEY):
+
+        # release name is in environment variable OPENSTACK_RELEASE
+        release_id = self.client.get_release_id('RHOS')
+        self.client.update_redhat_setup({
+            "release_id": release_id,
+            "username": username,
+            "license_type": license_type,
+            "satellite": satellite_host,
+            "password": password,
+            "activation_key": activation_key})
+        tasks = self.client.get_tasks()
+        # wait for 'redhat_setup' task only. Front-end works same way
+        for task in tasks:
+            if task['name'] == 'redhat_setup' \
+                    and task['result']['release_info']['release_id'] \
+                            == release_id:
+                return self._task_wait(task, 60 * 120)
+
+    def assert_release_state(self, release_name, state='available'):
+        for release in self.client.get_releases():
+            if release["name"].find(release_name) != -1:
+                self.assertEqual(release['state'], state)
+                return release["id"]

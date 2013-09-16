@@ -14,18 +14,16 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import time
-import traceback
 import threading
+import traceback
 
-from kombu import Connection, Exchange, Queue
+from kombu import Connection
 from kombu.mixins import ConsumerMixin
 
-import nailgun.rpc as rpc
-from nailgun.settings import settings
-from nailgun.logger import logger
-from nailgun.rpc.receiver import NailgunReceiver
 from nailgun.db import db
+from nailgun.logger import logger
+import nailgun.rpc as rpc
+from nailgun.rpc.receiver import NailgunReceiver
 
 
 class RPCConsumer(ConsumerMixin):
@@ -42,13 +40,13 @@ class RPCConsumer(ConsumerMixin):
         callback = getattr(self.receiver, body["method"])
         try:
             callback(**body["args"])
-        except Exception as exc:
+            db().commit()
+        except Exception:
             logger.error(traceback.format_exc())
             db().rollback()
         finally:
-            db().commit()
+            msg.ack()
             db().expire_all()
-        msg.ack()
 
 
 class RPCKombuThread(threading.Thread):

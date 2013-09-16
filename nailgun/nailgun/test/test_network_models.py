@@ -18,10 +18,12 @@ import json
 
 from sqlalchemy.sql import not_
 
-from nailgun.test.base import reverse
-from nailgun.test.base import fake_tasks
+from nailgun.api.models import Network
+from nailgun.api.models import NetworkGroup
+from nailgun.api.models import Vlan
 from nailgun.test.base import BaseHandlers
-from nailgun.api.models import Vlan, Network, NetworkGroup
+from nailgun.test.base import fake_tasks
+from nailgun.test.base import reverse
 
 
 class TestNetworkModels(BaseHandlers):
@@ -57,7 +59,7 @@ class TestNetworkModels(BaseHandlers):
     def test_network_recreating_on_env(self):
         self.env.create(
             cluster_kwargs={
-                "mode": "ha"
+                "mode": "ha_compact"
             },
             nodes_kwargs=[
                 {"pending_addition": True},

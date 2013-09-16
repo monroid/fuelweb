@@ -17,6 +17,7 @@ from abc import abstractproperty, abstractmethod
 from devops.helpers.helpers import _get_file_size
 from devops.manager import Manager
 from ipaddr import IPNetwork
+import hashlib
 from fuelweb_test.node_roles import Nodes
 from fuelweb_test.settings import EMPTY_SNAPSHOT, ISO_PATH
 
@@ -25,6 +26,7 @@ class CiBase(object):
     def __init__(self):
         self.manager = Manager()
         self._environment = None
+        self.saved_environment_states = {}
 
     def _get_or_create(self):
         try:
@@ -34,11 +36,11 @@ class CiBase(object):
             self._environment.define()
             return self._environment
 
-    def get_empty_state(self):
-        if self.environment().has_snapshot(EMPTY_SNAPSHOT):
-            self.environment().revert(EMPTY_SNAPSHOT)
-        else:
-            self.setup_environment()
+    def get_state(self, name):
+        if self.environment().has_snapshot(name):
+            self.environment().revert(name)
+            return True
+        return False
 
     def environment(self):
         """
@@ -120,6 +122,50 @@ class CiBase(object):
         """
         pass
 
+    def get_empty_environment(self):
+        if not(self.get_state(EMPTY_SNAPSHOT)):
+            self.setup_environment()
+            self.environment().snapshot(EMPTY_SNAPSHOT)
+
+    def generate_state_hash(self, settings):
+        return hashlib.md5(str(settings)).hexdigest()
+
+    def revert_to_state(self, settings):
+        state_hash = self.generate_state_hash(settings)
+
+        empty_state_hash = self.generate_state_hash({})
+        if state_hash == empty_state_hash:
+            # revert to empty state
+            self.get_empty_environment()
+            return True
+
+        if state_hash in self.saved_environment_states:
+            # revert to matching state
+            state = self.saved_environment_states[state_hash]
+            if not(self.get_state(state['snapshot_name'])):
+                return False
+            self.environment().resume()
+            return True
+
+        return False
+
+    def snapshot_state(self, name, settings):
+        state_hash = self.generate_state_hash(settings)
+        snapshot_name = '{0}_{1}'.format(
+            name.replace(' ', '_')[:17], state_hash)
+        self.environment().suspend(verbose=False)
+        self.environment().snapshot(
+            name=snapshot_name,
+            description=name,
+            force=True,
+        )
+        self.environment().resume(verbose=False)
+        self.saved_environment_states[state_hash] = {
+            'snapshot_name': snapshot_name,
+            'cluster_name': name,
+            'settings': settings
+        }
+
     def internal_virtual_ip(self):
         return str(IPNetwork(
             self.environment().network_by_name('internal').ip_network)[-2])
@@ -130,9 +176,15 @@ class CiBase(object):
                 self.environment().network_by_name('public').ip_network)[1])
 
     def internal_router(self):
+        return self._router('internal')
+
+    def nat_router(self):
+        return self._router('nat')
+
+    def _router(self, router_name):
         return str(
             IPNetwork(
-                self.environment().network_by_name('internal').ip_network)[1])
+                self.environment().network_by_name(router_name).ip_network)[1])
 
     def get_host_node_ip(self):
         return self.internal_router()

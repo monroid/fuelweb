@@ -14,14 +14,18 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+"""
+Handlers dealing with plugins
+"""
 
-import web
+
 import json
+import web
 
-from nailgun.api.handlers.base \
-    import JSONHandler, content_json, build_json_response
-from nailgun.plugin.manager import PluginManager
+from nailgun.api.handlers.base import content_json
+from nailgun.api.handlers.base import JSONHandler
 from nailgun.api.handlers.tasks import TaskHandler
+from nailgun.plugin.manager import PluginManager
 
 
 class PluginCollectionHandler(JSONHandler):

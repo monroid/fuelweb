@@ -14,16 +14,22 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import json
-
 import web
 
-from nailgun.db import db
+from nailgun.api.handlers.base import content_json
+from nailgun.api.handlers.base import JSONHandler
 from nailgun.api.models import Task
-from nailgun.api.handlers.base import JSONHandler, content_json
+from nailgun.db import db
+
+"""
+Handlers dealing with tasks
+"""
 
 
 class TaskHandler(JSONHandler):
+    """Task single handler
+    """
+
     fields = (
         "id",
         "cluster",
@@ -38,10 +44,19 @@ class TaskHandler(JSONHandler):
 
     @content_json
     def GET(self, task_id):
+        """:returns: JSONized Task object.
+        :http: * 200 (OK)
+               * 404 (task not found in db)
+        """
         task = self.get_object_or_404(Task, task_id)
         return self.render(task)
 
     def DELETE(self, task_id):
+        """:returns: JSONized Cluster object.
+        :http: * 204 (task successfully deleted)
+               * 400 (can't delete running task manually)
+               * 404 (task not found in db)
+        """
         task = self.get_object_or_404(Task, task_id)
         if task.status not in ("ready", "error"):
             raise web.badrequest("You cannot delete running task manually")
@@ -56,9 +71,18 @@ class TaskHandler(JSONHandler):
 
 
 class TaskCollectionHandler(JSONHandler):
+    """Task collection handler
+    """
 
     @content_json
     def GET(self):
+        """May receive cluster_id parameter to filter list
+        of tasks
+
+        :returns: Collection of JSONized Task objects.
+        :http: * 200 (OK)
+               * 404 (task not found in db)
+        """
         user_data = web.input(cluster_id=None)
         if user_data.cluster_id == '':
             tasks = db().query(Task).filter_by(

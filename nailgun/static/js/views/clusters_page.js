@@ -16,13 +16,14 @@
 define(
 [
     'models',
+    'utils',
     'views/common',
     'views/dialogs',
     'text!templates/clusters/page.html',
     'text!templates/clusters/cluster.html',
     'text!templates/clusters/new.html'
 ],
-function(models, commonViews, dialogViews, clustersPageTemplate, clusterTemplate, newClusterTemplate) {
+function(models, utils, commonViews, dialogViews, clustersPageTemplate, clusterTemplate, newClusterTemplate) {
     'use strict';
     var ClustersPage, ClusterList, Cluster;
 
@@ -47,9 +48,9 @@ function(models, commonViews, dialogViews, clustersPageTemplate, clusterTemplate
             'click .create-cluster': 'createCluster'
         },
         createCluster: function() {
-            var createClusterDialogView = new dialogViews.CreateClusterDialog({collection: this.collection});
-            app.page.registerSubView(createClusterDialogView);
-            createClusterDialogView.render();
+            var createClusterWizardView = new dialogViews.CreateClusterWizard({collection: this.collection});
+            app.page.registerSubView(createClusterWizardView);
+            createClusterWizardView.render();
         },
         initialize: function() {
             this.collection.on('sync add', this.render, this);
@@ -71,6 +72,7 @@ function(models, commonViews, dialogViews, clustersPageTemplate, clusterTemplate
         tagName: 'a',
         className: 'span3 clusterbox',
         template: _.template(clusterTemplate),
+        templateHelpers: _.pick(utils, 'showDiskSize', 'showMemorySize'),
         updateInterval: 3000,
         scheduleUpdate: function() {
             if (this.model.task('cluster_deletion', ['running', 'ready']) || this.model.task('deploy', 'running')) {
@@ -117,7 +119,7 @@ function(models, commonViews, dialogViews, clustersPageTemplate, clusterTemplate
             this.model.on('change', this.render, this);
         },
         render: function() {
-            this.$el.html(this.template({cluster: this.model}));
+            this.$el.html(this.template(_.extend({cluster: this.model}, this.templateHelpers)));
             this.updateProgress();
             if (this.model.task('cluster_deletion', ['running', 'ready'])) {
                 this.$el.addClass('disabled-cluster');

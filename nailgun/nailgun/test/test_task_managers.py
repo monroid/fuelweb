@@ -16,22 +16,19 @@
 
 import json
 import time
-import unittest
-
-from mock import patch
 
 from nailgun.settings import settings
 
-import nailgun
+from nailgun.api.models import Cluster
+from nailgun.api.models import Node
+from nailgun.api.models import Notification
+from nailgun.api.models import Task
+from nailgun.errors import errors
 import nailgun.rpc as rpc
 from nailgun.task.manager import DeploymentTaskManager
-from nailgun.task.fake import FAKE_THREADS
-from nailgun.errors import errors
 from nailgun.test.base import BaseHandlers
-from nailgun.test.base import reverse
 from nailgun.test.base import fake_tasks
-from nailgun.api.models import Cluster, Attributes, Task, Notification, Node
-from nailgun.api.models import Release
+from nailgun.test.base import reverse
 
 
 class TestTaskManagers(BaseHandlers):
@@ -78,9 +75,16 @@ class TestTaskManagers(BaseHandlers):
     @fake_tasks()
     def test_do_not_redeploy_nodes_in_ready_status(self):
         self.env.create(nodes_kwargs=[
-            {"status": "ready"},
+            {"pending_addition": True},
             {"pending_addition": True}])
         cluster_db = self.env.clusters[0]
+        # Generate ips, fqdns
+        cluster_db.prepare_for_deployment()
+        # First node with status ready
+        # should not be readeployed
+        self.env.nodes[0].status = 'ready'
+        self.db.commit()
+
         cluster_db.clear_pending_changes()
 
         supertask = self.env.launch_deployment()
@@ -96,113 +100,20 @@ class TestTaskManagers(BaseHandlers):
         self.assertEquals(self.env.nodes[1].status, 'ready')
         self.assertEquals(self.env.nodes[1].progress, 100)
 
-    @unittest.skip("it's not right for now")
-    def test_redeploy_nodes_in_ready_status_if_cluster_network_was_changed(
-            self):
-
-        self.env.create(
-            nodes_kwargs=[
-                {"status": "ready"},
-                {"pending_addition": True}])
-
-        cluster_db = self.env.clusters[0]
-        cluster_db.clear_pending_changes()
-
-        resp = self.app.get(
-            reverse(
-                'NetworkConfigurationHandler',
-                kwargs={"cluster_id": cluster_db.id}
-            ),
-            headers=self.default_headers
-        )
-
-        network_configuration = json.loads(resp.body)
-        network_configuration['networks'][0]['vlan_start'] = 500
-
-        resp = self.app.put(
-            reverse(
-                'NetworkConfigurationHandler',
-                kwargs={"cluster_id": cluster_db.id}
-            ),
-            json.dumps(network_configuration),
-            headers=self.default_headers
-        )
-        self.assertEquals(resp.status, 202)
-        self.assertEquals(len(cluster_db.changes), 1)
-
-        supertask = self.env.launch_deployment()
-        self.assertEquals(supertask.name, 'deploy')
-        self.assertIn(supertask.status, ('running', 'ready'))
-
-        self.env.wait_for_nodes_status(
-            self.env.nodes,
-            ['provisioning', 'provisioned'])
-
-        self.env.wait_ready(supertask)
-        self.env.refresh_nodes()
-        for n in filter(
-            lambda n: n.cluster_id == self.env.clusters[0].id,
-            self.env.nodes
-        ):
-            self.assertEquals(n.status, 'ready')
-            self.assertEquals(n.progress, 100)
-
-        self.env.db.refresh(cluster_db)
-        self.assertEquals(len(cluster_db.changes), 0)
-
-    @unittest.skip("it's not right for now")
-    def test_redeploy_nodes_in_ready_status_if_cluster_attrs_were_changed(
-        self
-    ):
-        self.env.create(
-            nodes_kwargs=[
-                {"status": "ready"},
-                {"pending_addition": True}])
-
-        cluster_db = self.env.clusters[0]
-        cluster_db.clear_pending_changes()
-
-        resp = self.app.put(
-            reverse(
-                'ClusterAttributesHandler',
-                kwargs={'cluster_id': cluster_db.id}),
-            headers=self.default_headers,
-            params=json.dumps({'cluster_type': 'both'})
-        )
-
-        self.assertEquals(resp.status, 200)
-        self.assertEquals(len(cluster_db.changes), 1)
-
-        supertask = self.env.launch_deployment()
-        self.assertEquals(supertask.name, 'deploy')
-        self.assertIn(supertask.status, ('running', 'ready'))
-        self.env.wait_for_nodes_status(
-            self.env.nodes,
-            ['provisioned', 'provisioning'])
-
-        self.env.wait_ready(supertask)
-        self.env.refresh_nodes()
-        for n in self.env.nodes:
-            self.assertEquals(n.status, 'ready')
-            self.assertEquals(n.progress, 100)
-
-        self.env.db.refresh(cluster_db)
-        self.assertEquals(len(cluster_db.changes), 0)
-
     @fake_tasks()
     def test_deployment_fails_if_node_offline(self):
         cluster = self.env.create_cluster(api=True)
-        node1 = self.env.create_node(cluster_id=cluster['id'],
-                                     role="controller",
-                                     pending_addition=True)
-        node2 = self.env.create_node(cluster_id=cluster['id'],
-                                     role="compute",
-                                     online=False,
-                                     name="Offline node",
-                                     pending_addition=True)
-        node3 = self.env.create_node(cluster_id=cluster['id'],
-                                     role="compute",
-                                     pending_addition=True)
+        self.env.create_node(cluster_id=cluster['id'],
+                             roles=["controller"],
+                             pending_addition=True)
+        self.env.create_node(cluster_id=cluster['id'],
+                             roles=["compute"],
+                             online=False,
+                             name="Offline node",
+                             pending_addition=True)
+        self.env.create_node(cluster_id=cluster['id'],
+                             roles=["compute"],
+                             pending_addition=True)
         supertask = self.env.launch_deployment()
         self.env.wait_error(
             supertask,
@@ -214,21 +125,21 @@ class TestTaskManagers(BaseHandlers):
     @fake_tasks()
     def test_redeployment_works(self):
         self.env.create(
-            cluster_kwargs={"mode": "ha"},
+            cluster_kwargs={"mode": "ha_compact"},
             nodes_kwargs=[
                 {"pending_addition": True},
                 {"pending_addition": True},
                 {"pending_addition": True},
-                {"role": "compute", "pending_addition": True}
+                {"roles": ["compute"], "pending_addition": True}
             ]
         )
         supertask = self.env.launch_deployment()
         self.env.wait_ready(supertask, 60)
         self.env.refresh_nodes()
 
-        node3 = self.env.create_node(
+        self.env.create_node(
             cluster_id=self.env.clusters[0].id,
-            role="controller",
+            roles=["controller"],
             pending_addition=True
         )
 
@@ -242,7 +153,7 @@ class TestTaskManagers(BaseHandlers):
     @fake_tasks()
     def test_redeployment_error_nodes(self):
         self.env.create(
-            cluster_kwargs={"mode": "ha"},
+            cluster_kwargs={"mode": "ha_compact"},
             nodes_kwargs=[
                 {
                     "pending_addition": True,
@@ -252,7 +163,7 @@ class TestTaskManagers(BaseHandlers):
                 },
                 {"pending_addition": True},
                 {"pending_addition": True},
-                {"role": "compute", "pending_addition": True}
+                {"roles": ["compute"], "pending_addition": True}
             ]
         )
         supertask = self.env.launch_deployment()
@@ -379,7 +290,7 @@ class TestTaskManagers(BaseHandlers):
             time.sleep(1)
             try:
                 self.db.refresh(clstr)
-            except:
+            except Exception:
                 break
             if time.time() - timer > timeout:
                 raise Exception("Cluster deletion seems to be hanged")
@@ -399,13 +310,12 @@ class TestTaskManagers(BaseHandlers):
             cluster_kwargs={},
             nodes_kwargs=[
                 {"status": "ready", "progress": 100},
-                {"role": "compute", "status": "ready", "progress": 100},
-                {"role": "compute", "pending_addition": True},
+                {"roles": ["compute"], "status": "ready", "progress": 100},
+                {"roles": ["compute"], "pending_addition": True},
             ]
         )
         cluster_id = self.env.clusters[0].id
         cluster_name = self.env.clusters[0].name
-        nodes_ids = [n.id for n in self.env.nodes]
         resp = self.app.delete(
             reverse(
                 'ClusterHandler',
@@ -421,7 +331,7 @@ class TestTaskManagers(BaseHandlers):
             time.sleep(1)
             try:
                 self.db.refresh(clstr)
-            except:
+            except Exception:
                 break
             if time.time() - timer > timeout:
                 raise Exception("Cluster deletion seems to be hanged")
@@ -440,7 +350,7 @@ class TestTaskManagers(BaseHandlers):
         self.env.create(
             cluster_kwargs={},
             nodes_kwargs=[
-                {"status": "ready",  "pending_addition": True},
+                {"status": "ready", "pending_addition": True},
             ]
         )
         cluster_id = self.env.clusters[0].id
@@ -483,11 +393,11 @@ class TestTaskManagers(BaseHandlers):
         self.env.create(
             cluster_kwargs={
                 "api": True,
-                "mode": "ha"
+                "mode": "ha_compact"
             },
             nodes_kwargs=[
-                {"role": "controller", "pending_addition": True},
-                {"role": "compute", "pending_addition": True}
+                {"roles": ["controller"], "pending_addition": True},
+                {"roles": ["compute"], "pending_addition": True}
             ] * 3
         )
         cluster_id = self.env.clusters[0].id
@@ -495,7 +405,6 @@ class TestTaskManagers(BaseHandlers):
         supertask = self.env.launch_deployment()
         self.env.wait_ready(supertask)
 
-        nodes_ids = [n.id for n in self.env.nodes]
         resp = self.app.delete(
             reverse(
                 'ClusterHandler',
@@ -511,7 +420,7 @@ class TestTaskManagers(BaseHandlers):
             time.sleep(1)
             try:
                 self.db.refresh(clstr)
-            except:
+            except Exception:
                 break
             if time.time() - timer > timeout:
                 raise Exception("Cluster deletion seems to be hanged")
@@ -537,7 +446,7 @@ class TestTaskManagers(BaseHandlers):
         self.env.launch_deployment()
         self.env.refresh_nodes()
         for node in self.env.nodes:
-            fqdn = "%s-%s.%s" % (node.role, node.id, settings.DNS_DOMAIN)
+            fqdn = "node-%s.%s" % (node.id, settings.DNS_DOMAIN)
             self.assertEquals(fqdn, node.fqdn)
 
     @fake_tasks()

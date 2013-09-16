@@ -16,6 +16,7 @@
 import logging
 from fuelweb_test.helpers import HTTPClient
 from fuelweb_test.integration.decorators import debug, json_parse
+from fuelweb_test.settings import OPENSTACK_RELEASE
 
 
 logger = logging.getLogger(__name__)
@@ -118,14 +119,34 @@ class NailgunClient(object):
 
     @logwrap
     @json_parse
+    def get_tasks(self):
+        return self.client.get("/api/tasks")
+
+    @logwrap
+    @json_parse
     def get_releases(self):
         return self.client.get("/api/releases/")
 
     @logwrap
-    def get_grizzly_release_id(self):
+    @json_parse
+    def get_node_disks(self, disk_id):
+        return self.client.get("/api/nodes/%s/disks" % disk_id)
+
+    @logwrap
+    def get_release_id(self, release_name=OPENSTACK_RELEASE):
         for release in self.get_releases():
-            if release["name"].find("Grizzly") != -1:
+            if release["name"].find(release_name) != -1:
                 return release["id"]
+
+    @logwrap
+    @json_parse
+    def get_node_interfaces(self, node_id):
+        return self.client.get("/api/nodes/%s/interfaces" % node_id)
+
+    @logwrap
+    @json_parse
+    def put_node_interfaces(self, data):
+        return self.client.put("/api/nodes/interfaces", data)
 
     @logwrap
     @json_parse
@@ -139,6 +160,34 @@ class NailgunClient(object):
             "/api/clusters",
             data=data
         )
+
+    @logwrap
+    @json_parse
+    def get_ostf_test_sets(self):
+        return self.client.get("/ostf/testsets")
+
+    @logwrap
+    @json_parse
+    def get_ostf_tests(self):
+        return self.client.get("/ostf/tests")
+
+    @logwrap
+    @json_parse
+    def get_ostf_test_run(self, cluster_id):
+        return self.client.get("/ostf/testruns/last/%s" % cluster_id)
+
+    @logwrap
+    @json_parse
+    def ostf_run_tests(self, cluster_id, test_sets_list):
+        data = []
+        for test_set in test_sets_list:
+            data.append(
+                {
+                    'metadata': {'cluster_id': cluster_id, 'config': {}},
+                    'testset': test_set
+                }
+            )
+        return self.client.post("/ostf/testruns", data)
 
     @logwrap
     @json_parse
@@ -180,3 +229,13 @@ class NailgunClient(object):
             cluster_vlans.extend(range(network['vlan_start'],
                                        network['vlan_start'] + amount))
         return cluster_vlans
+
+    @logwrap
+    @json_parse
+    def get_notifications(self):
+        return self.client.get("/api/notifications")
+
+    @logwrap
+    @json_parse
+    def update_redhat_setup(self, data):
+        return self.client.post("/api/redhat/setup", data=data)

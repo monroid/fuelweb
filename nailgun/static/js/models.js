@@ -54,6 +54,9 @@ define(['utils'], function(utils) {
             }
             return _.isEmpty(errors) ? null : errors;
         },
+        groupings: function() {
+            return {roles: 'Roles', hardware: 'Hardware Info', both: 'Roles and hardware info'};
+        },
         task: function(taskName, status) {
             return this.get('tasks') && this.get('tasks').findTask({name: taskName, status: status});
         },
@@ -73,7 +76,7 @@ define(['utils'], function(utils) {
                 return false;
             }
             // forbid add more than 1 controller in simple mode
-            if (role == 'controller' && this.get('mode') != 'ha' && _.filter(this.get('nodes').nodesAfterDeployment(), function(node) {return node.get('role') == role;}).length >= 1) {
+            if (role == 'controller' && this.get('mode') != 'ha_compact' && _.filter(this.get('nodes').nodesAfterDeployment(), function(node) {return node.get('role') == role;}).length >= 1) {
                 return false;
             }
             return true;
@@ -90,14 +93,10 @@ define(['utils'], function(utils) {
             return true;
         },
         availableModes: function() {
-            return ['multinode', 'ha'];
+            return ['multinode', 'ha_compact'];
         },
         availableRoles: function() {
-            var roles = ['controller'];
-            if (this.get('mode') != 'singlenode') {
-                roles.push('compute', 'cinder');
-            }
-            return roles;
+            return this.get('release').get('roles');
         },
         parse: function(response) {
             response.release = new models.Release(response.release);
@@ -126,21 +125,24 @@ define(['utils'], function(utils) {
                 if (resourceName == 'cores') {
                     resource = this.get('meta').cpu.total;
                 } else if (resourceName == 'hdd') {
-                    var hdd = 0;
-                    _.each(this.get('meta').disks, function(disk) {
-                        if (_.isNumber(disk.size)) {
-                            hdd += disk.size;
-                        }
-                    });
-                    resource = hdd;
+                    resource = _.reduce(this.get('meta').disks, function(hdd, disk) {return _.isNumber(disk.size) ?  hdd + disk.size : hdd;}, 0);
                 } else if (resourceName == 'ram') {
-                    resource = this.get('meta').memory.total / Math.pow(1024, 3);
+                    resource = this.get('meta').memory.total;
                 }
             } catch (e) {}
-            if (_.isNaN(resource)) {
+            if (_.isNaN(resource) || !_.isNumber(resource)) {
                 resource = 0;
             }
             return resource;
+        },
+        sortRoles: function() {
+            var preferredOrder = ['controller', 'compute', 'cinder'];
+            return _.union(this.get('roles'), this.get('pending_roles')).sort(function(a, b) {
+                return _.indexOf(preferredOrder, a) - _.indexOf(preferredOrder, b);
+            });
+        },
+        canDiscardDeletion: function() {
+            return this.get('pending_deletion') && !(_.contains(this.get('roles'), 'controller') && this.collection.cluster.get('mode') == 'multinode' && this.collection.cluster.get('nodes').filter(function(node) {return _.contains(node.get('pending_roles'), 'controller');}).length);
         }
     });
 
@@ -153,7 +155,7 @@ define(['utils'], function(utils) {
         },
         hasChanges: function() {
             return !!this.filter(function(node) {
-                return node.get('pending_addition') || node.get('pending_deletion');
+                return node.get('pending_addition') || node.get('pending_deletion') || node.get('pending_roles').length;
             }).length;
         },
         currentNodes: function() {
@@ -162,9 +164,15 @@ define(['utils'], function(utils) {
         nodesAfterDeployment: function() {
             return this.filter(function(node) {return node.get('pending_addition') || !node.get('pending_deletion');});
         },
+        nodesAfterDeploymentWithRole: function(role) {
+            return _.filter(this.nodesAfterDeployment(), function(node) {return _.contains(_.union(node.get('roles'), node.get('pending_roles')), role);}).length;
+        },
         resources: function(resourceName) {
             var resources = this.map(function(node) {return node.resource(resourceName);});
             return _.reduce(resources, function(sum, n) {return sum + n;}, 0);
+        },
+        getByIds: function(ids) {
+            return this.filter(function(node) {return _.contains(ids, node.id);});
         }
     });
 
@@ -409,7 +417,7 @@ define(['utils'], function(utils) {
                                     rangeErrors.end = 'Invalid IP range end';
                                 }
                                 if (start != '' && end != '' && !this.validateIPrange(start, end)) {
-                                    rangeErrors.start = rangeErrors.end = 'Lower IP range bound is greater than upper bound';
+                                    rangeErrors.start = rangeErrors.end = 'IP range start is greater than IP range end';
                                 }
                                 if (rangeErrors.start || rangeErrors.end) {
                                     errors.ip_ranges = _.compact(_.union([rangeErrors], errors.ip_ranges));
@@ -442,7 +450,7 @@ define(['utils'], function(utils) {
                     }
                 } else if (attribute == 'vlan_start') {
                     if (!_.isNull(attrs.vlan_start) || (attrs.name == 'fixed' && options.net_manager == 'VlanManager')) {
-                        if (_.isNaN(attrs.vlan_start) || !_.isNumber(attrs.vlan_start) || attrs.vlan_start < 1 || attrs.vlan_start > 4094) {
+                        if (!utils.isNaturalNumber(attrs.vlan_start) || attrs.vlan_start < 1 || attrs.vlan_start > 4094) {
                             errors.vlan_start = 'Invalid VLAN ID';
                         }
                     }
@@ -451,7 +459,7 @@ define(['utils'], function(utils) {
                 } else if (attribute == 'gateway' && this.validateIP(attrs.gateway)) {
                     errors.gateway = 'Invalid gateway';
                 } else if (attribute == 'amount') {
-                    if (!attrs.amount || (attrs.amount && (!_.isNumber(attrs.amount) || attrs.amount < 1))) {
+                    if (!utils.isNaturalNumber(attrs.amount)) {
                         errors.amount = 'Invalid amount of networks';
                     } else if (attrs.amount && attrs.amount > 4095 - attrs.vlan_start) {
                         errors.amount = 'Number of networks needs more VLAN IDs than available. Check VLAN ID Range field.';
@@ -566,6 +574,11 @@ define(['utils'], function(utils) {
     models.OSTFClusterMetadata = Backbone.Model.extend({
         constructorName: 'TestRun',
         urlRoot: '/api/ostf'
+    });
+
+    models.FuelKey = Backbone.Model.extend({
+        constructorName: 'FuelKey',
+        urlRoot: '/api/registration/key'
     });
 
     return models;

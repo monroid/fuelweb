@@ -19,7 +19,14 @@ define(
     'utils',
     'models',
     'text!templates/dialogs/simple_message.html',
-    'text!templates/dialogs/create_cluster.html',
+    'text!templates/dialogs/create_cluster_wizard.html',
+    'text!templates/dialogs/create_cluster_wizard/name_and_release.html',
+    'text!templates/dialogs/create_cluster_wizard/mode.html',
+    'text!templates/dialogs/create_cluster_wizard/compute.html',
+    'text!templates/dialogs/create_cluster_wizard/network.html',
+    'text!templates/dialogs/create_cluster_wizard/storage.html',
+    'text!templates/dialogs/create_cluster_wizard/additional.html',
+    'text!templates/dialogs/create_cluster_wizard/ready.html',
     'text!templates/dialogs/rhel_license.html',
     'text!templates/dialogs/change_cluster_mode.html',
     'text!templates/dialogs/discard_changes.html',
@@ -27,9 +34,10 @@ define(
     'text!templates/dialogs/remove_cluster.html',
     'text!templates/dialogs/error_message.html',
     'text!templates/dialogs/show_node.html',
-    'text!templates/dialogs/dismiss_settings.html'
+    'text!templates/dialogs/dismiss_settings.html',
+    'text!templates/dialogs/delete_nodes.html'
 ],
-function(require, utils, models, simpleMessageTemplate, createClusterDialogTemplate, rhelCredentialsDialogTemplate, changeClusterModeDialogTemplate, discardChangesDialogTemplate, displayChangesDialogTemplate, removeClusterDialogTemplate, errorMessageTemplate, showNodeInfoTemplate, discardSettingsChangesTemplate) {
+function(require, utils, models, simpleMessageTemplate, createClusterWizardTemplate, clusterNameAndReleasePaneTemplate, clusterModePaneTemplate, clusterComputePaneTemplate, clusterNetworkPaneTemplate, clusterStoragePaneTemplate, clusterAdditionalServicesPaneTemplate, clusterReadyPaneTemplate, rhelCredentialsDialogTemplate, changeClusterModeDialogTemplate, discardChangesDialogTemplate, displayChangesDialogTemplate, removeClusterDialogTemplate, errorMessageTemplate, showNodeInfoTemplate, discardSettingsChangesTemplate, deleteNodesTemplate) {
     'use strict';
 
     var views = {};
@@ -52,8 +60,7 @@ function(require, utils, models, simpleMessageTemplate, createClusterDialogTempl
             this.$('.modal-body').html(this.errorMessageTemplate({logsLink: logsLink}));
         },
         displayInfoMessage: function(options) {
-            this.template = _.template(simpleMessageTemplate);
-            this.render(options);
+            this.$el.html(_.template(simpleMessageTemplate)(options));
             if (options.error) {
                 this.displayErrorMessage();
             }
@@ -76,56 +83,90 @@ function(require, utils, models, simpleMessageTemplate, createClusterDialogTempl
         }
     });
 
-    views.DialogWithRhelCredentials = views.Dialog.extend({
+    var rhelCredentialsMixin = {
         renderRhelCredentialsForm: function(options) {
             var commonViews = require('views/common'); // avoid circular dependencies
             this.rhelCredentialsForm = new commonViews.RhelCredentialsForm(_.extend({dialog: this}, options));
             this.registerSubView(this.rhelCredentialsForm);
             this.$('.credentials').html('').append(this.rhelCredentialsForm.render().el);
         }
-    });
+    };
 
-    views.CreateClusterDialog = views.DialogWithRhelCredentials.extend({
-        template: _.template(createClusterDialogTemplate),
+    var clusterWizardPanes = {};
+
+    views.CreateClusterWizard = views.Dialog.extend({
+        template: _.template(createClusterWizardTemplate),
         events: {
-            'click .create-cluster-btn:not(:disabled)': 'submitForm',
-            'keydown input': 'onInputKeydown',
-            'change select[name=release]': 'updateReleaseParameters'
+            'click .next-pane-btn': 'nextPane',
+            'click .prev-pane-btn': 'prevPane',
+            'click .wizard-step.available': 'onStepClick',
+            'click .finish-btn': 'createCluster'
         },
-        submitForm: function() {
-            if (this.rhelCredentialsFormVisible()) {
-                if (this.rhelCredentialsForm.setCredentials()) {
-                    this.rhelCredentialsForm.saveCredentials();
-                    this.createCluster();
-                }
-            } else {
-                this.createCluster();
-            }
+        initialize: function(options) {
+            _.defaults(this, options);
+            this.activePaneIndex = null;
+            this.maxAvaialblePaneIndex = 0;
+            this.panes = [];
+            _.each(this.panesConstructors, function(Pane) {
+                var pane = new Pane({wizard: this});
+                this.registerSubView(pane);
+                this.panes.push(pane);
+                pane.render();
+            }, this);
+        },
+        onStepClick: function(e) {
+            var paneIndex = parseInt($(e.currentTarget).data('pane'), 10);
+            this.activePane().processPaneData().done(_.bind(function() {
+                this.goToPane(paneIndex);
+            }, this));
+        },
+        findPane: function(PaneConstructor) {
+            return _.find(this.panes, function(pane) {
+                return pane instanceof PaneConstructor;
+            });
+        },
+        activePane: function() {
+            return this.panes[this.activePaneIndex];
+        },
+        goToPane: function(index) {
+            this.activePane().$el.detach();
+            this.maxAvaialblePaneIndex = _.max([this.maxAvaialblePaneIndex, this.activePaneIndex, index]);
+            this.activePaneIndex = index;
+            this.render();
+        },
+        nextPane: function() {
+            this.activePane().processPaneData().done(_.bind(function() {
+                this.goToPane(this.activePaneIndex + 1);
+            }, this));
+        },
+        prevPane: function() {
+            this.goToPane(this.activePaneIndex - 1);
         },
         createCluster: function() {
-            this.$('.control-group').removeClass('error').find('.help-inline').text('');
-            var cluster = new models.Cluster();
-            cluster.on('invalid', function(model, error) {
-                _.each(error, function(message, field) {
-                    this.$('*[name=' + field + ']').closest('.control-group').addClass('error').find('.help-inline').text(message);
-                }, this);
-                this.$('.create-cluster-btn').attr('disabled', false);
-            }, this);
-            var deferred = cluster.save({
-                name: $.trim(this.$('input[name=name]').val()),
-                release: parseInt(this.$('select[name=release]').val(), 10)
-            });
+            var cluster = this.findPane(clusterWizardPanes.ClusterNameAndReleasePane).cluster;
+            _.invoke(this.panes, 'beforeClusterCreation', cluster);
+            var deferred = cluster.save();
             if (deferred) {
-                this.$('.create-cluster-btn').attr('disabled', true);
+                this.$('.wizard-footer button').prop('disabled', true);
                 deferred
                     .done(_.bind(function() {
-                        this.$el.modal('hide');
                         this.collection.add(cluster);
+                        $.when.apply($, _.invoke(this.panes, 'afterClusterCreation', cluster))
+                            .done(_.bind(function() {
+                                this.$el.modal('hide');
+                            }, this))
+                            .fail(_.bind(function() {
+                                this.displayInfoMessage({
+                                    title: 'Environment Configuration Error',
+                                    message: 'Your OpenStack environment has been created, but confiugration failed. You can configure it manually.'
+                                });
+                            }, this));
                     }, this))
                     .fail(_.bind(function(response) {
                         if (response.status == 409) {
+                            this.$('.wizard-footer button').prop('disabled', false);
+                            this.goToPane(0);
                             cluster.trigger('invalid', cluster, {name: response.responseText});
-                            this.$('.create-cluster-btn').attr('disabled', false);
                         } else if (response.status == 400) {
                             this.displayInfoMessage({error: false, title: 'Create a new OpenStack environment error', message: response.responseText});
                         } else {
@@ -133,13 +174,89 @@ function(require, utils, models, simpleMessageTemplate, createClusterDialogTempl
                         }
                     }, this));
             }
-            return deferred;
+        },
+        render: function() {
+            if (_.isNull(this.activePaneIndex)) {
+                this.activePaneIndex = 0;
+            }
+            var pane = this.activePane();
+            var currentStep = this.activePaneIndex + 1;
+            var maxAvailableStep = this.maxAvaialblePaneIndex + 1;
+            var totalSteps = this.panes.length;
+            this.constructor.__super__.render.call(this, {
+                currentStep: currentStep,
+                totalSteps: totalSteps,
+                maxAvailableStep: maxAvailableStep
+            });
+            this.$('.pane-title').text(pane.title || '');
+            this.$('.pane-content').append(pane.el);
+            this.$('.prev-pane-btn').prop('disabled', !this.activePaneIndex);
+            this.$('.next-pane-btn').toggle(currentStep != totalSteps);
+            this.$('.finish-btn').toggle(currentStep == totalSteps);
+            this.$('.wizard-footer .btn-success:visible').focus();
+            return this;
+        }
+    });
+
+    views.WizardPane = Backbone.View.extend({
+        initialize: function(options) {
+            _.defaults(this, options);
+        },
+        processPaneData: function() {
+            return (new $.Deferred()).resolve();
+        },
+        beforeClusterCreation: function(cluster) {
+            return (new $.Deferred()).resolve();
+        },
+        afterClusterCreation: function(cluster) {
+            return (new $.Deferred()).resolve();
+        },
+        render: function() {
+            this.$el.html(this.template());
+            return this;
+        }
+    });
+
+    clusterWizardPanes.ClusterNameAndReleasePane = views.WizardPane.extend(_.extend({
+        template: _.template(clusterNameAndReleasePaneTemplate),
+        events: {
+            'keydown input': 'onInputKeydown',
+            'change select[name=release]': 'updateReleaseParameters'
+        },
+        processPaneData: function() {
+            var success = this.createCluster();
+            if (success && this.rhelCredentialsFormVisible()) {
+                success = this.rhelCredentialsForm.setCredentials();
+                if (success) {
+                    this.rhelCredentialsForm.saveCredentials();
+                    this.rhelCredentialsForm.visible = false;
+                    this.redHatAccount.absent = false;
+                    this.updateReleaseParameters();
+                }
+            }
+            var deferred = new $.Deferred();
+            return deferred[success ? 'resolve' : 'reject']();
+        },
+        createCluster: function() {
+            this.$('.control-group').removeClass('error').find('.help-inline').text('');
+            this.cluster = new models.Cluster();
+            this.cluster.on('invalid', function(model, error) {
+                _.each(error, function(message, field) {
+                    this.$('*[name=' + field + ']').closest('.control-group').addClass('error').find('.help-inline').text(message);
+                }, this);
+                this.$('.create-cluster-btn').attr('disabled', false);
+            }, this);
+            return this.cluster.set({
+                name: $.trim(this.$('input[name=name]').val()),
+                release: parseInt(this.$('select[name=release]').val(), 10)
+            }, {validate: true});
         },
         onInputKeydown: function(e) {
             this.$('.control-group.error').removeClass('error');
             this.$('.help-inline').html('');
             if (e.which == 13) {
-                this.submitForm();
+                e.preventDefault();
+                this.wizard.nextPane();
             }
         },
         updateReleaseParameters: function() {
@@ -162,7 +279,8 @@ function(require, utils, models, simpleMessageTemplate, createClusterDialogTempl
         rhelCredentialsFormVisible: function() {
             return this.redHatAccount.absent && this.release.get('state') == 'not_available';
         },
-        initialize: function() {
+        initialize: function(options) {
+            _.defaults(this, options);
             this.releases = new models.Releases();
             this.releases.fetch();
             this.releases.on('sync', this.renderReleases, this);
@@ -179,7 +297,7 @@ function(require, utils, models, simpleMessageTemplate, createClusterDialogTempl
         },
         render: function() {
             this.tearDownRegisteredSubViews();
-            this.constructor.__super__.render.call(this);
+            this.$el.html(this.template());
             this.renderReleases();
             this.renderRhelCredentialsForm({
                 redHatAccount: this.redHatAccount,
@@ -187,9 +305,99 @@ function(require, utils, models, simpleMessageTemplate, createClusterDialogTempl
             });
             return this;
         }
+    }, rhelCredentialsMixin));
+
+    clusterWizardPanes.ClusterModePane = views.WizardPane.extend({
+        title: 'Deployment Mode',
+        template: _.template(clusterModePaneTemplate),
+        events: {
+            'change input[name=mode]': 'toggleTypes'
+        },
+        toggleTypes: function() {
+            this.$('.mode-description').addClass('hide');
+            this.$('.help-mode-' + this.$('input[name=mode]:checked').val()).removeClass('hide');
+        },
+        beforeClusterCreation: function(cluster) {
+            cluster.set({mode: this.$('input[name=mode]:checked').val()});
+            return (new $.Deferred()).resolve();
+        },
+        render: function() {
+            var availableModes = models.Cluster.prototype.availableModes();
+            this.$el.html(this.template({availableModes: availableModes}));
+            this.$('input[name=mode]:first').prop('checked', true).trigger('change');
+            return this;
+        }
     });
 
-    views.RhelCredentialsDialog = views.DialogWithRhelCredentials.extend({
+    clusterWizardPanes.ClusterComputePane = views.WizardPane.extend({
+        title: 'Compute',
+        template: _.template(clusterComputePaneTemplate),
+        afterClusterCreation: function(cluster) {
+            var deferred = new $.Deferred();
+            var settings = new models.Settings({}, {url: _.result(cluster, 'url') + '/attributes'});
+            //FIXME: redo with deferred.pipe?
+            settings.fetch()
+                .done(_.bind(function() {
+                    try {
+                        settings.get('editable').common.libvirt_type.value = this.$('input[name=hypervisor]:checked').val();
+                    } catch(e) {
+                        deferred.reject();
+                    }
+                    settings.save()
+                        .done(function() {deferred.resolve();})
+                        .fail(function() {deferred.reject();});
+                }, this))
+                .fail(function() {deferred.reject();});
+            return deferred;
+        },
+        render: function() {
+            this.$el.html(this.template());
+            this.$('input[name=hypervisor][value=qemu]').prop('checked', true);
+            return this;
+        }
+    });
+
+    clusterWizardPanes.ClusterNetworkPane = views.WizardPane.extend({
+        title: 'Network',
+        template: _.template(clusterNetworkPaneTemplate),
+        render: function() {
+            this.$el.html(this.template());
+            this.$('input[name=manager]:first').prop('checked', true);
+            return this;
+        }
+    });
+
+    clusterWizardPanes.ClusterStoragePane = views.WizardPane.extend({
+        title: 'Storage',
+        template: _.template(clusterStoragePaneTemplate),
+        render: function() {
+            this.$el.html(this.template());
+            this.$('input[name=storage]:first').prop('checked', true);
+            return this;
+        }
+    });
+
+    clusterWizardPanes.ClusterAdditionalServicesPane = views.WizardPane.extend({
+        title: 'Addition Services',
+        template: _.template(clusterAdditionalServicesPaneTemplate)
+    });
+
+    clusterWizardPanes.ClusterReadyPane = views.WizardPane.extend({
+        title: 'Ready',
+        template: _.template(clusterReadyPaneTemplate)
+    });
+
+    views.CreateClusterWizard.prototype.panesConstructors = [
+        clusterWizardPanes.ClusterNameAndReleasePane,
+        clusterWizardPanes.ClusterModePane,
+        clusterWizardPanes.ClusterComputePane,
+        //clusterWizardPanes.ClusterNetworkPane,
+        //clusterWizardPanes.ClusterStoragePane,
+        //clusterWizardPanes.ClusterAdditionalServicesPane,
+        clusterWizardPanes.ClusterReadyPane
+    ];
+
+    views.RhelCredentialsDialog = views.Dialog.extend(_.extend({
         template: _.template(rhelCredentialsDialogTemplate),
         events: {
             'click .btn-os-download': 'submitForm',
@@ -229,7 +437,7 @@ function(require, utils, models, simpleMessageTemplate, createClusterDialogTempl
             this.renderRhelCredentialsForm({redHatAccount: this.redHatAccount});
             return this;
         }
-    });
+    }, rhelCredentialsMixin));
 
     views.ChangeClusterModeDialog = views.Dialog.extend({
         template: _.template(changeClusterModeDialogTemplate),
@@ -266,14 +474,14 @@ function(require, utils, models, simpleMessageTemplate, createClusterDialogTempl
         discardChanges: function() {
             this.$('.discard-btn').addClass('disabled');
             var pendingNodes = this.model.get('nodes').filter(function(node) {
-                return node.get('pending_addition') || node.get('pending_deletion');
+                return node.get('pending_addition') || node.get('pending_deletion') || node.get('pending_roles').length;
             });
             var nodes = new models.Nodes(pendingNodes);
             nodes.each(function(node) {
+                node.set({pending_roles: []}, {silent: true});
                 if (node.get('pending_addition')) {
                     node.set({
                         cluster_id: null,
-                        role: null,
                         pending_addition: false
                     }, {silent: true});
                 } else {
@@ -282,7 +490,7 @@ function(require, utils, models, simpleMessageTemplate, createClusterDialogTempl
             });
             nodes.toJSON = function() {
                 return this.map(function(node) {
-                    return _.pick(node.attributes, 'id', 'cluster_id', 'role', 'pending_addition', 'pending_deletion');
+                    return _.pick(node.attributes, 'id', 'cluster_id', 'pending_addition', 'pending_deletion', 'pending_roles');
                 });
             };
             Backbone.sync('update', nodes)
@@ -319,7 +527,7 @@ function(require, utils, models, simpleMessageTemplate, createClusterDialogTempl
         render: function() {
             this.constructor.__super__.render.call(this, {
                 cluster: this.model,
-                size: this.model.get('mode') == 'ha' ? 3 : 1
+                size: this.model.get('mode') == 'ha_compact' ? 3 : 1
             });
             return this;
         }
@@ -413,10 +621,10 @@ function(require, utils, models, simpleMessageTemplate, createClusterDialogTempl
             $(e.currentTarget).siblings('.accordion-body').collapse('toggle');
         },
         goToDisksConfiguration: function() {
-            app.navigate('#cluster/' + this.clusterId + '/nodes/disks/' + this.node.id, {trigger: true});
+            app.navigate('#cluster/' + this.node.get('cluster') + '/nodes/disks/' + this.node.id, {trigger: true});
         },
         goToInterfacesConfiguration: function() {
-            app.navigate('#cluster/' + this.clusterId + '/nodes/interfaces/' + this.node.id, {trigger: true});
+            app.navigate('#cluster/' + this.node.get('cluster') + '/nodes/interfaces/' + this.node.id, {trigger: true});
         },
         initialize: function(options) {
             _.defaults(this, options);
@@ -431,7 +639,7 @@ function(require, utils, models, simpleMessageTemplate, createClusterDialogTempl
         render: function() {
             this.constructor.__super__.render.call(this, _.extend({
                 node: this.node,
-                configurationPossible: this.configurationPossible
+                deployment: app.page.tab.model.task('deploy', 'running')
             }, this.templateHelpers));
             this.$('.accordion-body').collapse({
                 parent: this.$('.accordion'),
@@ -466,6 +674,51 @@ function(require, utils, models, simpleMessageTemplate, createClusterDialogTempl
                 message: this.message || this.defaultMessage,
                 verification: this.verification || false
             });
+            return this;
+        }
+    });
+
+    views.DeleteNodesDialog = views.Dialog.extend({
+        template: _.template(deleteNodesTemplate),
+        events: {
+            'click .btn-delete': 'deleteNodes'
+        },
+        deleteNodes: function() {
+            if (this.nodes.cluster) {
+                this.$('.btn-delete').prop('disabled', true);
+                this.nodes.each(function(node) {
+                    if (!node.get('pending_deletion')) {
+                        if (node.get('pending_addition')) {
+                            node.set({
+                                cluster_id: null,
+                                pending_addition: false,
+                                pending_roles: []
+                            });
+                        } else{
+                            node.set({pending_deletion: true});
+                        }
+                    }
+                }, this);
+                this.nodes.toJSON = function(options) {
+                    return this.map(function(node) {
+                        return _.pick(node.attributes, 'id', 'cluster_id', 'pending_roles', 'pending_addition', 'pending_deletion');
+                    });
+                };
+                var deferred = this.nodes.sync('update', this.nodes)
+                    .done(_.bind(function() {
+                        this.$el.modal('hide');
+                        app.page.tab.model.fetch();
+                        app.page.tab.screen.nodes.fetch();
+                        app.page.tab.screen.calculateBatchActionsButtonsState();
+                        app.page.tab.screen.showEditNodesButton();
+                        app.navbar.refresh();
+                        app.page.removeFinishedTasks();
+                    }, this))
+                    .fail(_.bind(this.displayErrorMessage, this));
+                }
+        },
+        render: function() {
+            this.constructor.__super__.render.call(this, {nodes: this.nodes});
             return this;
         }
     });

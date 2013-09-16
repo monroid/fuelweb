@@ -13,9 +13,19 @@ function license_check {
     rm -f $tmpfile
 }
 
-function nailgun_checks {
+function nailgun_deps {
     # Installing nailgun dependencies
-    sudo pip install -r $WORKSPACE/local_repo/requirements-eggs.txt
+    
+    if [ -z $1 ]; then
+        dependencies=$WORKSPACE/local_repo/requirements-eggs.txt
+    else
+        dependencies=$1
+    fi
+    sudo pip install -r $dependencies
+}
+
+function nailgun_checks {
+    nailgun_deps
     cd $WORKSPACE/local_repo/nailgun
 
     # ***** Running Python unit tests, includes pep8 check of nailgun *****
@@ -23,13 +33,6 @@ function nailgun_checks {
 }
 
 function ruby_checks {
-    # Installing ruby dependencies
-    echo 'source "http://rubygems.org"' > /tmp/product-gemfile
-    cat requirements-gems.txt | while read gem ver; do \
-            echo "gem \"$gem\", \"$ver\"" >> /tmp/product-gemfile; \
-        done
-    sudo bundle install --gemfile /tmp/product-gemfile
-
     cd $WORKSPACE/local_repo/astute
-    rspec -c -fd spec/unit/
+    WORKSPACE=$WORKSPACE/local_repo/astute ./run_tests.sh
 }

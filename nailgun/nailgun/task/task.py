@@ -14,38 +14,27 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import datetime
-import uuid
-import itertools
-import os
-import time
-import traceback
-import signal
-import subprocess
-import shlex
 import json
+import shlex
+import subprocess
 
-import web
 import netaddr
-from sqlalchemy.orm import object_mapper, ColumnProperty
-from sqlalchemy import or_
+from sqlalchemy.orm import ColumnProperty
+from sqlalchemy.orm import object_mapper
 
-import nailgun.rpc as rpc
-from nailgun.db import db
-from nailgun.logger import logger
-from nailgun.settings import settings
-from nailgun import notifier
-from nailgun.network.manager import NetworkManager
-from nailgun.api.models import Base
-from nailgun.api.models import Network
+from nailgun.api.models import IPAddr
 from nailgun.api.models import NetworkGroup
 from nailgun.api.models import Node
 from nailgun.api.models import NodeNICInterface
-from nailgun.api.models import Cluster
-from nailgun.api.models import IPAddr
 from nailgun.api.models import Release
-from nailgun.task.fake import FAKE_THREADS
+from nailgun.db import db
 from nailgun.errors import errors
+from nailgun.logger import logger
+from nailgun.network.manager import NetworkManager
+from nailgun.orchestrator.serializers import serialize
+import nailgun.rpc as rpc
+from nailgun.settings import settings
+from nailgun.task.fake import FAKE_THREADS
 from nailgun.task.helpers import TaskHelper
 
 
@@ -111,92 +100,36 @@ class DeploymentTask(object):
     @classmethod
     def message(cls, task):
         logger.debug("DeploymentTask.message(task=%s)" % task.uuid)
-        task_uuid = task.uuid
-        cluster_id = task.cluster.id
-        netmanager = NetworkManager()
 
+        task.cluster.prepare_for_deployment()
         nodes = TaskHelper.nodes_to_deploy(task.cluster)
-
-        logger.info("Associated FQDNs to nodes: %s" %
-                    ', '.join([n.fqdn for n in nodes]))
-
         nodes_ids = [n.id for n in nodes]
-        if nodes_ids:
-            logger.info("Assigning IP addresses to nodes..")
-            netmanager.assign_ips(nodes_ids, "management")
-            netmanager.assign_ips(nodes_ids, "public")
-            netmanager.assign_ips(nodes_ids, "storage")
-
-        nodes_with_attrs = []
-        # FIXME(mihgen): We need to pass all other nodes, so astute
-        #  can know about all the env, not only about added nodes.
         for n in db().query(Node).filter_by(
-            cluster=task.cluster
-        ).order_by(Node.id):
+                cluster=task.cluster).order_by(Node.id):
             # However, we must not pass nodes which are set to be deleted.
             if n.pending_deletion:
                 continue
+
             if n.id in nodes_ids:  # It's node which we need to redeploy
                 n.pending_addition = False
+                if n.pending_roles:
+                    n.roles += n.pending_roles
+                    n.pending_roles = []
                 if n.status in ('deploying'):
                     n.status = 'provisioned'
                 n.progress = 0
                 db().add(n)
                 db().commit()
-            nodes_with_attrs.append(cls.__format_node_for_naily(n))
-
-        cluster_attrs = task.cluster.attributes.merged_attrs_values()
-        cluster_attrs['master_ip'] = settings.MASTER_IP
-        cluster_attrs['controller_nodes'] = cls.__controller_nodes(cluster_id)
-
-        nets_db = db().query(Network).join(NetworkGroup).\
-            filter(NetworkGroup.cluster_id == cluster_id).all()
-
-        ng_db = db().query(NetworkGroup).filter_by(
-            cluster_id=cluster_id).all()
-        for net in ng_db:
-            net_name = net.name + '_network_range'
-            if net.name == 'floating':
-                cluster_attrs[net_name] = \
-                    cls.__get_ip_ranges_first_last(net)
-            elif net.name == 'public':
-                # We shouldn't pass public_network_range attribute
-                continue
-            else:
-                cluster_attrs[net_name] = net.cidr
-
-        net_params = {}
-        net_params['network_manager'] = task.cluster.net_manager
-
-        fixed_net = db().query(NetworkGroup).filter_by(
-            cluster_id=cluster_id).filter_by(name='fixed').first()
-        # network_size is required for all managers, otherwise
-        #  puppet will use default (255)
-        net_params['network_size'] = fixed_net.network_size
-        if net_params['network_manager'] == 'VlanManager':
-            net_params['num_networks'] = fixed_net.amount
-            net_params['vlan_start'] = fixed_net.vlan_start
-            cls.__add_vlan_interfaces(nodes_with_attrs)
-
-        cluster_attrs['novanetwork_parameters'] = net_params
-
-        if task.cluster.mode == 'ha':
-            logger.info("HA mode chosen, creating VIP addresses for it..")
-            cluster_attrs['management_vip'] = netmanager.assign_vip(
-                cluster_id, "management")
-            cluster_attrs['public_vip'] = netmanager.assign_vip(
-                cluster_id, "public")
-
-        cluster_attrs['deployment_mode'] = task.cluster.mode
-        cluster_attrs['deployment_id'] = cluster_id
 
         message = {
             'method': 'deploy',
             'respond_to': 'deploy_resp',
             'args': {
                 'task_uuid': task.uuid,
-                'nodes': nodes_with_attrs,
-                'attributes': cluster_attrs
+                # if task.cluster.facts not empty dict, it will be used
+                # instead of computing cluster facts through serialize
+                'deployment_info': task.cluster.facts
+                or serialize(task.cluster)
             }
         }
 
@@ -211,66 +144,6 @@ class DeploymentTask(object):
         db().commit()
         rpc.cast('naily', message)
 
-    @classmethod
-    def __format_node_for_naily(cls, n):
-        netmanager = NetworkManager()
-        return {
-            'id': n.id, 'status': n.status, 'error_type': n.error_type,
-            'uid': n.id, 'ip': n.ip, 'mac': n.mac, 'role': n.role,
-            'fqdn': n.fqdn, 'progress': n.progress, 'meta': n.meta,
-            'network_data': netmanager.get_node_networks(n.id),
-            'online': n.online
-        }
-
-    @classmethod
-    def __add_vlan_interfaces(cls, nodes):
-        """
-        We shouldn't pass to orchetrator fixed network
-        when network manager is VlanManager, but we should specify
-        fixed_interface (private_interface in terms of fuel) as result
-        we just pass vlan_interface as node attribute.
-        """
-        netmanager = NetworkManager()
-        for node in nodes:
-            node_db = db().query(Node).get(node['id'])
-
-            fixed_interface = netmanager._get_interface_by_network_name(
-                node_db.id, 'fixed')
-
-            node['vlan_interface'] = fixed_interface.name
-
-    @classmethod
-    def __controller_nodes(cls, cluster_id):
-        nodes = db().query(Node).filter_by(
-            cluster_id=cluster_id,
-            role='controller',
-            pending_deletion=False).order_by(Node.id)
-
-        return map(cls.__format_node_for_naily, nodes)
-
-    @classmethod
-    def __get_ip_ranges_first_last(cls, network_group):
-        """
-        Get all ip ranges in "10.0.0.0-10.0.0.255" format
-        """
-        return [
-            "{0}-{1}".format(ip_range.first, ip_range.last)
-            for ip_range in network_group.ip_ranges
-        ]
-
-    @classmethod
-    def __get_ip_addresses_in_ranges(cls, network_group):
-        """
-        Get array of all possibale ip addresses in all ranges
-        """
-        ranges = []
-        for ip_range in network_group.ip_ranges:
-            ranges += map(lambda ip: str(ip),
-                          list(netaddr.IPRange(ip_range.first, ip_range.last)))
-
-        # Return only uniq ip addresses
-        return sorted(list(set(ranges)))
-
 
 class ProvisionTask(object):
     @classmethod
@@ -282,7 +155,7 @@ class ProvisionTask(object):
         netmanager = NetworkManager()
 
         USE_FAKE = settings.FAKE_TASKS or settings.FAKE_TASKS_AMQP
-        # TODO: For now we send nodes data to orchestrator
+        # TODO(NAME): For now we send nodes data to orchestrator
         # which is cobbler oriented. But for future we
         # need to use more abstract data structure.
         nodes_data = []
@@ -308,7 +181,7 @@ class ProvisionTask(object):
                 'power_type': 'ssh',
                 'power_user': 'root',
                 'power_address': node.ip,
-                'name': TaskHelper.make_slave_name(node.id, node.role),
+                'name': TaskHelper.make_slave_name(node.id),
                 'hostname': node.fqdn,
                 'name_servers': '\"%s\"' % settings.DNS_SERVERS,
                 'name_servers_search': '\"%s\"' % settings.DNS_SEARCH,
@@ -342,7 +215,7 @@ class ProvisionTask(object):
             else:
                 # If it's not in discover, we expect it to be booted
                 #   in target system.
-                # TODO: Get rid of expectations!
+                # TODO(NAME): Get rid of expectations!
                 logger.info(
                     "Node %s seems booted with real system",
                     node.id
@@ -456,7 +329,7 @@ class DeletionTask(object):
                 nodes_to_delete.append({
                     'id': node.id,
                     'uid': node.id,
-                    'role': node.role
+                    'roles': node.roles
                 })
 
                 if USE_FAKE:
@@ -465,7 +338,7 @@ class DeletionTask(object):
                     keep_attrs = (
                         'id',
                         'cluster_id',
-                        'role',
+                        'roles',
                         'pending_deletion',
                         'pending_addition'
                     )
@@ -484,9 +357,7 @@ class DeletionTask(object):
         for node in nodes_to_delete_constant:
             node_db = db().query(Node).get(node['id'])
 
-            slave_name = TaskHelper.make_slave_name(
-                node['id'], node['role']
-            )
+            slave_name = TaskHelper.make_slave_name(node['id'])
             logger.debug("Removing node from database and pending it "
                          "to clean its MBR: %s", slave_name)
             if not node_db.online:
@@ -501,9 +372,7 @@ class DeletionTask(object):
         engine_nodes = []
         if not USE_FAKE:
             for node in nodes_to_delete_constant:
-                slave_name = TaskHelper.make_slave_name(
-                    node['id'], node['role']
-                )
+                slave_name = TaskHelper.make_slave_name(node['id'])
                 logger.debug("Pending node to be removed from cobbler %s",
                              slave_name)
                 engine_nodes.append(slave_name)
@@ -512,8 +381,7 @@ class DeletionTask(object):
                     if node_db and node_db.fqdn:
                         node_hostname = node_db.fqdn
                     else:
-                        node_hostname = TaskHelper.make_slave_fqdn(
-                            node['id'], node['role'])
+                        node_hostname = TaskHelper.make_slave_fqdn(node['id'])
                     logger.info("Removing node cert from puppet: %s",
                                 node_hostname)
                     cmd = "puppet cert clean {0}".format(node_hostname)
@@ -577,7 +445,6 @@ class VerifyNetworksTask(object):
 
     @classmethod
     def execute(self, task, data):
-        task_uuid = task.uuid
         nodes = []
         for n in task.cluster.nodes:
             node_json = {'uid': n.id, 'networks': []}
@@ -671,8 +538,8 @@ class CheckNetworksTask(object):
                     nodes_with_errors = [
                         u'Node "{0}": {1}'.format(
                             name,
-                            ", ".join(networks)
-                        ) for name, networks in found_intersection
+                            ", ".join(_networks)
+                        ) for name, _networks in found_intersection
                     ]
                     err_msg = u"Some untagged networks are " \
                               "assigned to the same physical interface as " \
@@ -684,7 +551,7 @@ class CheckNetworksTask(object):
                               ))
                     raise errors.NetworkCheckError(err_msg, add_client=False)
 
-        admin_range = netaddr.IPSet([settings.ADMIN_NETWORK['cidr']])
+        admin_range = netaddr.IPNetwork(settings.ADMIN_NETWORK['cidr'])
         for ng in networks:
             net_errors = []
             sub_ranges = []
@@ -694,9 +561,8 @@ class CheckNetworksTask(object):
                 err_msgs.append("Invalid network ID: {0}".format(ng['id']))
             else:
                 if 'cidr' in ng:
-                    fnet = netaddr.IPSet([ng['cidr']])
-
-                    if fnet & admin_range:
+                    fnet = netaddr.IPNetwork(ng['cidr'])
+                    if NetworkManager().is_range_in_cidr(fnet, admin_range):
                         net_errors.append("cidr")
                         err_msgs.append(
                             "Intersection with admin "
@@ -715,8 +581,9 @@ class CheckNetworksTask(object):
                 # Check for intersection with Admin network
                 if 'ip_ranges' in ng:
                     for k, v in enumerate(ng['ip_ranges']):
-                        ip_range = netaddr.IPSet(netaddr.IPRange(v[0], v[1]))
-                        if ip_range & admin_range:
+                        ip_range = netaddr.IPRange(v[0], v[1])
+                        if NetworkManager().is_range_in_cidr(admin_range,
+                                                             ip_range):
                             net_errors.append("cidr")
                             err_msgs.append(
                                 "IP range {0} - {1} in {2} network intersects "
@@ -759,15 +626,17 @@ class CheckBeforeDeploymentTask(object):
 
     @classmethod
     def __check_controllers_count(cls, task):
-        controllers_count = len(
-            filter(lambda node: node.role == 'controller', task.cluster.nodes))
+        controllers_count = len(filter(
+            lambda node: 'controller' in (node.roles + node.pending_roles),
+            task.cluster.nodes)
+        )
         cluster_mode = task.cluster.mode
 
         if cluster_mode == 'multinode' and controllers_count < 1:
             raise errors.NotEnoughControllers(
                 "Not enough controllers, %s mode requires at least 1 "
                 "controller" % (cluster_mode))
-        elif cluster_mode == 'ha' and controllers_count < 3:
+        elif cluster_mode == 'ha_compact' and controllers_count < 3:
             raise errors.NotEnoughControllers(
                 "Not enough controllers, %s mode requires at least 3 "
                 "controllers" % (cluster_mode))
@@ -784,7 +653,6 @@ class CheckBeforeDeploymentTask(object):
 
     @classmethod
     def __check_network(cls, task):
-        netmanager = NetworkManager()
         nodes_count = len(task.cluster.nodes)
 
         public_network = filter(
@@ -836,7 +704,7 @@ class RedHatDownloadReleaseTask(RedHatTask):
 
     @classmethod
     def message(cls, task, data):
-        # TODO: fix this ugly code
+        # TODO(NAME): fix this ugly code
         cls.__update_release_state(
             data["release_id"]
         )

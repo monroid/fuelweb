@@ -16,6 +16,7 @@
 import logging
 import unittest
 from devops.helpers.helpers import wait
+from nose.plugins.attrib import attr
 from fuelweb_test.helpers import Ebtables
 from fuelweb_test.integration.base_node_test_case import BaseNodeTestCase
 from fuelweb_test.integration.decorators import snapshot_errors, \
@@ -34,117 +35,146 @@ logwrap = debug(logger)
 class TestNode(BaseNodeTestCase):
     @logwrap
     @fetch_logs
+    @attr(releases=['centos'])
     def test_release_upload(self):
+        self.prepare_environment()
         self._upload_sample_release()
 
     @logwrap
     @fetch_logs
+    @attr(releases=['centos'])
     def test_http_returns_no_error(self):
+        self.prepare_environment()
         self.client.get_root()
 
     @logwrap
     @fetch_logs
+    @attr(releases=['centos'])
     def test_create_empty_cluster(self):
+        self.prepare_environment()
         self.create_cluster(name='empty')
 
     @snapshot_errors
     @logwrap
     @fetch_logs
+    @attr(releases=['centos'])
     def test_node_deploy(self):
-        self.bootstrap_nodes(self.devops_nodes_by_names(['slave-01']))
+        self.prepare_environment()
+        self.bootstrap_nodes(self.nodes().slaves[:1])
 
     @snapshot_errors
     @logwrap
     @fetch_logs
+    @attr(releases=['centos'])
     def test_updating_nodes_in_cluster(self):
+        self.prepare_environment()
         cluster_id = self.create_cluster(name='empty')
-        nodes = {'controller': ['slave-01']}
-        self.bootstrap_nodes(self.devops_nodes_by_names(nodes['controller']))
+        nodes = {'slave-01': ['controller']}
+        self.bootstrap_nodes(self.nodes().slaves[:1])
         self.update_nodes(cluster_id, nodes)
 
     @snapshot_errors
     @logwrap
     @fetch_logs
+    @attr(releases=['centos'])
     def test_one_node_provisioning(self):
-        self.clean_clusters()
+        self.prepare_environment()
         cluster_id = self.create_cluster(name="provision")
-        self._basic_provisioning(
+        self.basic_provisioning(
             cluster_id=cluster_id,
-            nodes_dict={'controller': ['slave-01']}
+            nodes_dict={'slave-01': ['controller']}
         )
+        self.run_OSTF(cluster_id=cluster_id, should_fail=12, should_pass=12)
 
     @snapshot_errors
     @logwrap
     @fetch_logs
+    @attr(releases=['centos'])
     def test_simple_cluster_flat(self):
-        cluster_name = 'simple_flat'
-        nodes = {'controller': ['slave-01'], 'compute': ['slave-02']}
-        self.clean_clusters()
-        cluster_id = self.create_cluster(name=cluster_name)
-        self._basic_provisioning(cluster_id, nodes)
+        cluster_id = self.prepare_environment(settings={
+            'nodes': {
+                'slave-01': ['controller'],
+                'slave-02': ['compute']
+            }
+        })
         self.assertClusterReady(
             'slave-01', smiles_count=6, networks_count=1, timeout=300)
         self.get_ebtables(cluster_id, self.nodes().slaves[:2]).restore_vlans()
         task = self._run_network_verify(cluster_id)
         self.assertTaskSuccess(task, 60 * 2)
+        self.run_OSTF(cluster_id=cluster_id, should_fail=6, should_pass=18)
 
     @snapshot_errors
     @logwrap
     @fetch_logs
+    @attr(releases=['centos'])
     def test_simple_cluster_vlan(self):
+        self.prepare_environment()
         cluster_name = 'simple_vlan'
-        nodes = {'controller': ['slave-01'], 'compute': ['slave-02']}
-        self.clean_clusters()
+        nodes = {'slave-01': ['controller'], 'slave-02': ['compute']}
         cluster_id = self.create_cluster(name=cluster_name)
         self.update_vlan_network_fixed(cluster_id, amount=8, network_size=32)
-        self._basic_provisioning(cluster_id, nodes)
+        self.basic_provisioning(cluster_id, nodes)
         self.assertClusterReady(
             'slave-01', smiles_count=6, networks_count=8, timeout=300)
         self.get_ebtables(cluster_id, self.nodes().slaves[:2]).restore_vlans()
         task = self._run_network_verify(cluster_id)
         self.assertTaskSuccess(task, 60 * 2)
+        self.run_OSTF(cluster_id=cluster_id, should_fail=6, should_pass=18)
 
     @snapshot_errors
     @logwrap
     @fetch_logs
+    @attr(releases=['centos'])
     def test_network_config(self):
-        self.clean_clusters()
-        cluster_id = self.create_cluster(name="network_config")
-        self._basic_provisioning(
-            cluster_id=cluster_id,
-            nodes_dict={'controller': ['slave-01']}
-        )
+        cluster_id = self.prepare_environment(settings={
+            'nodes': {
+                'slave-01': ['controller'],
+                'slave-02': ['compute']
+            }
+        })
         slave = self.nodes().slaves[0]
         node = self.get_node_by_devops_node(slave)
         self.assertNetworkConfiguration(node)
+        self.run_OSTF(cluster_id=cluster_id, should_fail=6, should_pass=18)
 
     @snapshot_errors
     @logwrap
     @fetch_logs
+    @attr(releases=['centos'])
     def test_node_deletion(self):
-        cluster_name = 'node_deletion'
-        nodes_dict = {'controller': ['slave-01']}
-        self.clean_clusters()
-        cluster_id = self.create_cluster(name=cluster_name)
-        self._basic_provisioning(
-            cluster_id=cluster_id,
-            nodes_dict=nodes_dict
-        )
-        nailgun_nodes = self.update_nodes(cluster_id, nodes_dict, False, True)
+        cluster_id = self.prepare_environment(settings={
+            'nodes': {
+                'slave-01': ['controller'],
+                'slave-02': ['compute']
+            }
+        })
+        nailgun_nodes = self.update_nodes(
+            cluster_id, {'slave-01': ['controller']}, False, True)
         task = self.deploy_cluster(cluster_id)
         self.assertTaskSuccess(task)
-        wait(lambda: self.is_node_discovered(nailgun_nodes[0]), timeout=3 * 60)
+        nodes = filter(lambda x: x["pending_deletion"] is True, nailgun_nodes)
+        self.assertTrue(
+            len(nodes) == 1,
+            "Verify 1 node has pending deletion status"
+        )
+        wait(lambda: self.is_node_discovered(
+            nodes[0]),
+            timeout=3 * 60
+        )
+        self.run_OSTF(cluster_id=cluster_id, should_fail=24, should_pass=0)
 
     @snapshot_errors
     @logwrap
     @fetch_logs
+    @attr(releases=['centos'])
     def test_network_verify_with_blocked_vlan(self):
+        self.prepare_environment()
         cluster_name = 'net_verify'
+        nodes_dict = {'slave-01': ['controller'], 'slave-02': ['compute']}
+
         cluster_id = self.create_cluster(name=cluster_name)
-
-        nodes_dict = {'controller': ['slave-01', 'slave-02']}
-
-        devops_nodes = self.devops_nodes_by_names(nodes_dict['controller'])
+        devops_nodes = self.nodes().slaves[:2]
         self.bootstrap_nodes(devops_nodes)
 
         ebtables = self.get_ebtables(cluster_id, devops_nodes)
@@ -160,7 +190,9 @@ class TestNode(BaseNodeTestCase):
     @snapshot_errors
     @logwrap
     @fetch_logs
+    @attr(releases=['centos'])
     def test_multinic_bootstrap_booting(self):
+        self.prepare_environment()
         slave = self.nodes().slaves[0]
         mac_addresses = [interface.mac_address for interface in
                          slave.interfaces.filter(network__name='internal')]
@@ -181,38 +213,33 @@ class TestNode(BaseNodeTestCase):
     @snapshot_errors
     @logwrap
     @fetch_logs
+    @attr(releases=['centos'])
     def test_simple_cluster_with_cinder(self):
-        cluster_name = 'simple_with_cinder'
-        nodes = {
-            'controller': ['slave-01'],
-            'compute': ['slave-02'],
-            'cinder': ['slave-03']
-        }
-        self.clean_clusters()
-        cluster_id = self.create_cluster(name=cluster_name)
-        self._basic_provisioning(cluster_id, nodes)
+        cluster_id = self.prepare_environment(settings={
+            'nodes': {
+                'slave-01': ['controller'],
+                'slave-02': ['compute'],
+                'slave-03': ['cinder']
+            }
+        })
         self.assertClusterReady(
             'slave-01', smiles_count=6, networks_count=1, timeout=300)
+        self.run_OSTF(cluster_id=cluster_id, should_fail=5, should_pass=19)
 
     @snapshot_errors
     @logwrap
     @fetch_logs
+    @attr(releases=['centos'])
     def test_add_compute_node(self):
-        cluster_name = 'node_addition'
-        nodes_dict = {'controller': [n.name
-                                     for n in self.nodes().slaves[:1]],
-                      'compute': [n.name
-                                  for n in self.nodes().slaves[1:2]]}
+        cluster_id = self.prepare_environment(settings={
+            'nodes': {
+                'slave-01': ['controller'],
+                'slave-02': ['compute']
+            }
+        })
 
-        self.clean_clusters()
-        cluster_id = self.create_cluster(name=cluster_name)
-        self._basic_provisioning(
-            cluster_id=cluster_id,
-            nodes_dict=nodes_dict
-        )
         self.bootstrap_nodes(self.nodes().slaves[2:3])
-        self.update_nodes(cluster_id, {'compute': [
-            n.name for n in self.nodes().slaves[2:3]]}, True, False)
+        self.update_nodes(cluster_id, {'slave-03': ['compute']}, True, False)
 
         task = self.client.deploy_cluster_changes(cluster_id)
         self.assertTaskSuccess(task)
@@ -223,18 +250,17 @@ class TestNode(BaseNodeTestCase):
             smiles_count=8, networks_count=1, timeout=300)
         self.assert_node_service_list(self.nodes().slaves[1].name, 8)
         self.assert_node_service_list(self.nodes().slaves[2].name, 8)
+        self.run_OSTF(cluster_id=cluster_id, should_fail=6, should_pass=18)
 
     @snapshot_errors
     @logwrap
     @fetch_logs
+    @attr(releases=['centos'])
     def test_floating_ips(self):
+        self.prepare_environment()
         cluster_name = 'floating_ips'
-        nodes_dict = {
-            'controller': ['slave-01'],
-            'compute': ['slave-02']
-        }
-        self.bootstrap_nodes(self.devops_nodes_by_names(
-            nodes_dict['controller'] + nodes_dict['compute']))
+        nodes_dict = {'slave-01': ['controller'], 'slave-02': ['compute']}
+        self.bootstrap_nodes(self.nodes().slaves[:2])
 
         cluster_id = self.create_cluster(name=cluster_name)
 
@@ -261,8 +287,164 @@ class TestNode(BaseNodeTestCase):
         expected_ips = ['240.0.0.%s' % i for i in range(2, 11, 1)] + \
                        ['240.0.0.%s' % i for i in range(20, 26, 1)] + \
                        ['240.0.0.%s' % i for i in range(30, 36, 1)]
-        self.assert_cluster_floating_list(
-            nodes_dict['compute'][0], expected_ips)
+        self.assert_cluster_floating_list('slave-02', expected_ips)
+        self.run_OSTF(cluster_id=cluster_id, should_fail=6, should_pass=18)
+
+    @snapshot_errors
+    @logwrap
+    @fetch_logs
+    @attr(releases=['centos'])
+    def test_node_disk_sizes(self):
+        self.prepare_environment()
+        # all nodes have 3 identical disks with same size
+        nodes_dict = {
+            'slave-01': ['controller'],
+            'slave-02': ['compute'],
+            'slave-03': ['cinder']
+        }
+
+        self.bootstrap_nodes(self.nodes().slaves[:3])
+
+        # assert /api/nodes
+        nailgun_nodes = self.client.list_nodes()
+        for node in nailgun_nodes:
+            for disk in node['meta']['disks']:
+                self.assertEqual(disk['size'], 21474836480, 'Disk size')
+
+        notifications = self.client.get_notifications()
+        for node in nailgun_nodes:
+            # assert /api/notifications
+            for notification in notifications:
+                if notification['node_id'] == node['id']:
+                    self.assertIn('64.0 GB HDD', notification['message'])
+
+            # assert disks
+            disks = self.client.get_node_disks(node['id'])
+            for disk in disks:
+                self.assertEqual(disk['size'], 19980, 'Disk size')
+
+        # deploy the cluster
+        self.prepare_environment(settings={'nodes': nodes_dict})
+
+        # assert node disks after deployment
+        for node_name in nodes_dict:
+            str_block_devices = self.get_cluster_block_devices(node_name)
+            self.assertRegexpMatches(
+                str_block_devices,
+                'vda\s+252:0\s+0\s+20G\s+0\s+disk'
+            )
+            self.assertRegexpMatches(
+                str_block_devices,
+                'vdb\s+252:16\s+0\s+20G\s+0\s+disk'
+            )
+            self.assertRegexpMatches(
+                str_block_devices,
+                'vdc\s+252:32\s+0\s+20G\s+0\s+disk'
+            )
+
+    @snapshot_errors
+    @logwrap
+    @fetch_logs
+    @attr(releases=['centos'])
+    def test_node_multiple_interfaces(self):
+        self.prepare_environment()
+        cluster_name = 'node interfaces'
+        interfaces_dict = {
+            'eth0': ['management'],
+            'eth1': ['floating', 'public'],
+            'eth2': ['storage'],
+            'eth3': ['fixed']
+        }
+        nodes_dict = {
+            'slave-01': ['controller'],
+            'slave-02': ['compute']
+        }
+        self.bootstrap_nodes(self.nodes().slaves[:2])
+
+        cluster_id = self.create_cluster(name=cluster_name)
+        self.update_nodes(cluster_id, nodes_dict, True, False)
+
+        nailgun_nodes = self.client.list_cluster_nodes(cluster_id)
+        for node in nailgun_nodes:
+            self.update_node_networks(node['id'], interfaces_dict)
+
+        task = self.deploy_cluster(cluster_id)
+        self.assertTaskSuccess(task)
+
+        nailgun_nodes = self.client.list_cluster_nodes(cluster_id)
+        for node in nailgun_nodes:
+            self.assertNetworkConfiguration(node)
+
+        task = self._run_network_verify(cluster_id)
+        self.assertTaskSuccess(task, 60 * 2)
+
+    @snapshot_errors
+    @logwrap
+    @fetch_logs
+    def test_untagged_network(self):
+        cluster_name = 'simple_untagged'
+
+        vlan_turn_off = {'vlan_start': None}
+        nodes = {
+            'slave-01': ['controller'],
+            'slave-02': ['compute']
+        }
+        interfaces = {
+            'eth0': [],
+            'eth1': ["public", "floating",
+                     "management", "storage",
+                     "fixed"],
+            'eth2': [],
+            'eth3': []
+        }
+
+        self.prepare_environment()
+
+        # create a new empty cluster and add nodes to it:
+        cluster_id = self.create_cluster(name=cluster_name)
+        self.bootstrap_nodes(self.nodes().slaves[:2])
+        self.update_nodes(cluster_id, nodes)
+
+        # assign all networks to second network interface:
+        nets = self.client.get_networks(cluster_id)['networks']
+        nailgun_nodes = self.client.list_cluster_nodes(cluster_id)
+        for node in nailgun_nodes:
+            self.update_node_networks(node['id'], interfaces)
+
+        # select networks that will be untagged:
+        [net.update(vlan_turn_off) for net in nets]
+
+        # stop using VLANs:
+        self.client.update_network(cluster_id,
+                                   networks=nets)
+
+        # run network check:
+        task = self._run_network_verify(cluster_id)
+        self.assertTaskSuccess(task, 60 * 5)
+
+        # deploy cluster:
+        task = self.deploy_cluster(cluster_id)
+        self.assertTaskSuccess(task)
+
+        #run network check again:
+        task = self._run_network_verify(cluster_id)
+        self.assertTaskSuccess(task, 60 * 5)
+
+    @logwrap
+    @fetch_logs
+    @attr(releases=['redhat'])
+    def test_download_redhat(self):
+        self.prepare_environment()
+
+        # download redhat repo from local place to boost the test
+        # remote = self.nodes().admin.remote('internal', 'root', 'r00tme')
+        # remote.execute('wget -q http://172.18.67.168/rhel6/rhel-rpms.tar.gz')
+        # remote.execute('tar xzf rhel-rpms.tar.gz -C /')
+
+        self.update_redhat_credentials('rhn')
+        self.assert_release_state('RHOS', state='available')
+        # self.ci().environment().snapshot(
+        #     name=EMPTY_SNAPSHOT, description=EMPTY_SNAPSHOT, force=True)
 
 if __name__ == '__main__':
     unittest.main()

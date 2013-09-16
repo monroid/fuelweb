@@ -14,9 +14,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import unittest
 import json
-from paste.fixture import TestApp
 
 from nailgun.api.models import Node
 from nailgun.test.base import BaseHandlers
@@ -52,7 +50,9 @@ class TestHandlers(BaseHandlers):
         node_id = '080000000003'
         resp = self.app.post(
             reverse('NodeCollectionHandler'),
-            json.dumps({'id': node_id, 'mac': 'ASDFAAASDFAA'}),
+            json.dumps({'id': node_id,
+                        'mac': 'ASDFAAASDFAA',
+                        'status': 'discover'}),
             headers=self.default_headers,
             expect_errors=True)
         # we now just ignore 'id' if present

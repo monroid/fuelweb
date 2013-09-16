@@ -14,8 +14,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from nailgun.network.manager import NetworkManager
 from nailgun.api.serializers.base import BasicSerializer
+from nailgun.network.manager import NetworkManager
 
 
 class NetworkConfigurationSerializer(BasicSerializer):
@@ -42,7 +42,7 @@ class NetworkConfigurationSerializer(BasicSerializer):
             cluster.network_groups
         )
 
-        if cluster.mode == 'ha':
+        if cluster.is_ha_mode:
             net_manager = NetworkManager()
             result['management_vip'] = net_manager.assign_vip(
                 cluster.id, 'management')

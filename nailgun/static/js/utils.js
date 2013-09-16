@@ -20,10 +20,10 @@ define(['require'], function(require) {
         serializeTabOptions: function(options) {
             return _.map(options, function(value, key) {
                 return key + ':' + value;
-            }).join(',');
+            }).join(';');
         },
         deserializeTabOptions: function(serializedOptions) {
-            return _.object(_.map(serializedOptions.split(','), function(option) {
+            return _.object(_.map(serializedOptions.split(';'), function(option) {
                 return option.split(':');
             }));
         },
@@ -97,6 +97,9 @@ define(['require'], function(require) {
         },
         floor: function(n, decimals) {
             return Math.floor(n * Math.pow(10, decimals)) / Math.pow(10, decimals);
+        },
+        isNaturalNumber: function(n) {
+            return !_.isNaN(n) && n > 0 && n % 1 === 0;
         }
     };
 

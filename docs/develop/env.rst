@@ -32,7 +32,8 @@ Setup for Nailgun Unit Tests
     sudo apt-get install python-dev python-pip python-psycopg2 python-jinja2
     sudo apt-get install python-paste python-yaml python-sqlalchemy python-kombu
     sudo apt-get install python-crypto python-simplejson python-webpy python-nose
-    sudo pip install fysom jsonschema
+    sudo apt-get install python-mock python-decorator python-netaddr python-flake8
+    sudo pip install fysom jsonschema hacking==0.7
 
 #. Install and configure PostgreSQL database::
 
@@ -50,11 +51,17 @@ Setup for Nailgun Unit Tests
     cd nailgun
     ./run_tests.sh --no-jslint --no-ui-tests
 
+#. Run the Nailgun flake8 test::
+
+    cd nailgun
+    ./run_tests.sh --flake8
+
 Setup for Web UI Tests
 ----------------------
 
 #. Install NodeJS (on Debian, you may need to use 'apt-get install -t
-   experimental' to get the latest npm)::
+   experimental' to get the latest npm, on Ubuntu 12.04, use nodejs package 
+   instead of nodejs-legacy))::
 
     sudo apt-get install npm nodejs-legacy
     sudo npm install -g jslint requirejs
@@ -91,32 +98,40 @@ Astute and Naily
 
 #. Install Ruby dependencies::
 
-    sudo apt-get install gem2deb ruby-activesupport ruby-rspec ruby-mocha ruby-amqp ruby-json mcollective-client
-    cd ~
-    gem2deb symboltable
-    dpkg -i ruby-symboltable_1.0.2-1_all.deb
-    git clone git@github.com:nulayer/raemon.git
-    cd raemon
-    git checkout v0.3.0
-    gem build raemon.gemspec
-    gem2deb raemon-0.3.0.gem
-    dpkg -i ruby-raemon_0.3.0-1_all.deb
+    sudo apt-get install git curl
+    \curl -L https://get.rvm.io | bash -s stable
+    rvm install 1.9.3
 
-#. Run Astute unit tests::
+#. Install or update dependencies and run unit tests::
 
     cd astute
-    find spec/unit/ -name '*_spec.rb'|xargs ruby -I.
+    ./run_tests.sh
 
 #. (optional) Run Astute MCollective integration test (you'll need to
    have MCollective server running for this to work)::
 
     cd astute
-    ruby -I. spec/integration/mcollective_spec.rb
+    bundle exec rspec spec/integration/mcollective_spec.rb
 
 Building the Fuel ISO
 ---------------------
 
-#. Follow these steps to prepare an environment for building::
+#. Following software is required to build the Fuel ISO images on Ubuntu
+   12.10 or newer (on Ubuntu 12.04, use nodejs package instead of
+   nodejs-legacy)::
+
+    sudo apt-get install build-essential make git ruby ruby-dev rubygems
+    sudo apt-get install python-setuptools yum yum-utils libmysqlclient-dev isomd5sum
+    sudo apt-get install python-nose libvirt-bin python-ipaddr python-paramiko python-yaml
+    sudo apt-get install python-pip kpartx extlinux npm nodejs-legacy unzip genisoimage
+    sudo gem install bundler -v 1.2.1
+    sudo gem install builder
+    sudo pip install xmlbuilder jinja2
+    sudo npm install -g requirejs
+
+#. (alternative) If you have completed the instructions in the previous
+   sections of Fuel development environment setup guide, the list of
+   additional packages required to build the ISO becomes shorter::
 
     sudo apt-get install ruby-dev ruby-builder bundler libmysqlclient-dev
     sudo apt-get install yum-utils kpartx extlinux genisoimage isomd5sum
@@ -125,6 +140,13 @@ Building the Fuel ISO
    commands as root user without request for a password::
 
     echo "`whoami` ALL=(ALL) NOPASSWD: ALL" | sudo tee -a /etc/sudoers
+
+#. If you haven't already done so, get the source code::
+
+    git clone https://github.com/Mirantis/fuelweb.git
+    cd fuelweb
+    git submodule init
+    git submodule update
 
 #. Now you can build the Fuel ISO image::
 
@@ -171,6 +193,28 @@ Running the FuelWeb Integration Test
     cd fuelweb
     make test-integration
 
+#. To save time, you can execute individual test cases from the
+   integration test suite like this (nice thing about TestAdminNode
+   is that it takes you from nothing to a Fuel master with 9 blank nodes
+   connected to 3 virtual networks)::
+
+    cd fuelweb
+    export ENV_NAME=fuelweb
+    export PUBLIC_FORWARD=nat
+    export ISO_PATH=`pwd`/build/iso/fuelweb-centos-6.4-x86_64.iso
+    nosetests -w fuelweb_test -s fuelweb_test.integration.test_admin_node:TestAdminNode.test_cobbler_alive
+
+#. The test harness creates a snapshot of all nodes called 'empty'
+   before starting the tests, and creates a new snapshot if a test
+   fails. You can revert to a specific snapshot with this command::
+
+    dos.py revert --snapshot-name <snapshot_name> <env_name>
+
+#. To fully reset your test environment, tell the Devops toolkit to erase it::
+
+    dos.py list
+    dos.py erase <env_name>
+
 Running Fuel Puppet Modules Unit Tests
 --------------------------------------
 
@@ -204,8 +248,10 @@ Building Documentation
 
 #. You will need the following software to build documentation::
 
-    sudo apt-get install librsvg2-bin rst2pdf python-sphinx python-sphinxcontrib.blockdiag
+    sudo apt-get install librsvg2-bin rst2pdf python-sphinx
     sudo pip install sphinxcontrib-plantuml
+    sudo apt-get install python-sphinxcontrib.blockdiag # on Ubuntu 12.10 or higher
+    sudo pip install sphinxcontrib-blockdiag # on Ubuntu 12.04
 
 #. Look at the list of available formats and generate the one you need::
 

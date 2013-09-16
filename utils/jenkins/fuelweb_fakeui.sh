@@ -5,6 +5,9 @@ topdir=$(dirname `readlink -f $0`)
 sudo ln -sf $topdir/init.d/nailgun /etc/init.d/nailgun
 sudo WORKSPACE=$WORKSPACE /etc/init.d/nailgun stop
 
+# Installing nailgun dependencies
+nailgun_deps $WORKSPACE/requirements-eggs.txt
+
 cd $WORKSPACE/nailgun
 # Cleaning database
 ./manage.py dropdb

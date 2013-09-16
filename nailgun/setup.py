@@ -15,10 +15,9 @@
 
 import os
 import os.path
-import pprint
 
-from setuptools import setup
 from setuptools import find_packages
+from setuptools import setup
 
 
 requires = [
@@ -29,8 +28,7 @@ requires = [
     'amqplib==1.0.2',
     'anyjson==0.3.1',
     'argparse==1.2.1',
-    'eventlet==0.9.17',
-    'greenlet==0.4.0',
+    'decorator==3.4.0',
     'kombu==2.1.8',
     'netaddr==0.7.10',
     'nose2==0.4.1',
@@ -80,7 +78,7 @@ if __name__ == "__main__":
           zip_safe=False,
           install_requires=requires,
           include_package_data=True,
-          scripts=['manage.py'],
+          scripts=['manage.py', 'fuel-cli/fuel'],
           entry_points={
               'console_scripts': [
                   'nailgun_syncdb = nailgun.db:syncdb',

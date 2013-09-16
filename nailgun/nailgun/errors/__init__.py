@@ -14,9 +14,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from nailgun.logger import logger
 from nailgun.errors.base import NailgunException
-
 
 default_messages = {
     # common errors
@@ -26,8 +24,10 @@ default_messages = {
     # node discovering errors
     "InvalidInterfacesInfo": "Invalid interfaces info",
     "InvalidMetadata": "Invalid metadata specified for node",
+    "CannotFindNodeIDForDiscovering": "Cannot find node for discovering",
 
     # deployment errors
+    "CheckBeforeDeploymentError": "Pre-Deployment check wasn't successful",
     "DeploymentAlreadyStarted": "Deployment already started",
     "DeletionAlreadyStarted": "Environment removal already started",
     "FailedProvisioning": "Failed to start provisioning",
@@ -38,7 +38,7 @@ default_messages = {
 
     # disk errors
     "NotEnoughFreeSpace": "Not enough free space",
-    "CannotFindVolumesInfoForRole": "Cannot fund volumes info for role",
+    "CannotFindVolumesInfoForRole": "Cannot find volumes info for role",
 
     # network errors
     "AdminNetworkNotFound": "Admin network info not found",
@@ -50,6 +50,7 @@ default_messages = {
     "NoSuitableCIDR": "Cannot find suitable CIDR",
     "CanNotFindInterface": "Cannot find interface",
     "CanNotDetermineEndPointIP": "Cannot determine end point IP",
+    "CanNotFindNetworkForNode": "Cannot find network for node",
 
     # plugin errors
     "PluginDownloading": "Cannot install plugin",

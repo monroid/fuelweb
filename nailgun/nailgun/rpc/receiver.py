@@ -14,26 +14,22 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import time
-import json
-import Queue
-import types
-import traceback
 import itertools
+import json
+import traceback
 
-from web.utils import ThreadedDict
 from sqlalchemy import or_
 
-import nailgun.rpc as rpc
-from nailgun.logger import logger
+from nailgun.api.models import IPAddr
+from nailgun.api.models import Node
+from nailgun.api.models import Release
+from nailgun.api.models import Task
 from nailgun.db import db
+from nailgun.logger import logger
 from nailgun.network.manager import NetworkManager
+from nailgun import notifier
 from nailgun.settings import settings
 from nailgun.task.helpers import TaskHelper
-from nailgun.api.models import Node, Network, NetworkGroup
-from nailgun.api.models import IPAddr, Task
-from nailgun.api.models import Release
-from nailgun import notifier
 
 
 class TaskNotFound(Exception):
@@ -190,7 +186,6 @@ class NailgunReceiver(object):
         if not status:
             status = task.status
 
-        error_nodes = []
         # First of all, let's update nodes in database
         for node in nodes:
             node_db = db().query(Node).get(node['uid'])
@@ -288,7 +283,6 @@ class NailgunReceiver(object):
             json.dumps(kwargs)
         )
         task_uuid = kwargs.get('task_uuid')
-        nodes = kwargs.get('nodes') or []
         message = kwargs.get('error')
         status = kwargs.get('status')
         progress = kwargs.get('progress')
@@ -366,9 +360,8 @@ class NailgunReceiver(object):
             # determining horizon url - it's an IP
             # of a first cluster controller
             controller = db().query(Node).filter_by(
-                cluster_id=task.cluster_id,
-                role='controller'
-            ).first()
+                cluster_id=task.cluster_id
+            ).filter(Node.role_list.any(name='controller')).first()
             if controller:
                 logger.debug(
                     u"Controller is found, node_id=%s, "
@@ -406,18 +399,17 @@ class NailgunReceiver(object):
                 logger.warning(u"Controller node not found in '{0}'".format(
                     task.cluster.name
                 ))
-        elif task.cluster.mode == 'ha':
+        elif task.cluster.is_ha_mode:
             # determining horizon url in HA mode - it's vip
             # from a public network saved in task cache
-            args = task.cache.get('args')
             try:
-                vip = args['attributes']['public_vip']
+                netmanager = NetworkManager()
                 message = (
                     u"Deployment of environment '{0}' is done. "
-                    "Access the OpenStack dashboard (Horizon) at http://{1}/"
+                    "Access the OpenStack dashboard (Horizon) at {1}"
                 ).format(
                     task.cluster.name,
-                    vip
+                    netmanager.get_horizon_url(task.cluster.id)
                 )
             except Exception as exc:
                 logger.error(": ".join([
@@ -603,7 +595,7 @@ class NailgunReceiver(object):
         if error_msg:
             status = 'error'
             cls._update_release_state(release_id, 'error')
-            # TODO: remove this ugly checks
+            # TODO(NAME): remove this ugly checks
             if 'Unknown error' in error_msg:
                 error_msg = 'Failed to check Red Hat ' \
                             'credentials'
@@ -632,7 +624,6 @@ class NailgunReceiver(object):
         )
         task_uuid = kwargs.get('task_uuid')
         error_msg = kwargs.get('error')
-        nodes = kwargs.get('nodes')
         status = kwargs.get('status')
         progress = kwargs.get('progress')
         notify = kwargs.get('msg')
@@ -654,7 +645,7 @@ class NailgunReceiver(object):
         if error_msg:
             status = 'error'
             cls._update_release_state(release_id, 'error')
-            # TODO: remove this ugly checks
+            # TODO(NAME): remove this ugly checks
             if 'Unknown error' in error_msg:
                 error_msg = 'Failed to check Red Hat licenses '
             if error_msg != 'Task aborted':
@@ -753,6 +744,6 @@ class NailgunReceiver(object):
         release = db().query(Release).get(release_id)
         release.state = 'error'
         db().commit()
-        # TODO: remove this ugly checks
+        # TODO(NAME): remove this ugly checks
         if error_message != 'Task aborted':
             notifier.notify('error', error_message)

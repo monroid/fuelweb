@@ -14,43 +14,47 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+"""
+Handlers dealing with clusters
+"""
+
 import json
 import traceback
 import web
-import netaddr
 
-from nailgun.db import db
-from nailgun.settings import settings
-from nailgun.logger import logger
-from nailgun.errors import errors
+from nailgun.api.handlers.base import content_json
+from nailgun.api.handlers.base import JSONHandler
+from nailgun.api.handlers.tasks import TaskHandler
+from nailgun.api.models import Attributes
 from nailgun.api.models import Cluster
 from nailgun.api.models import Node
-from nailgun.api.models import Network, NetworkGroup, Vlan
 from nailgun.api.models import Release
-from nailgun.api.models import Attributes
-from nailgun.api.models import Task
-from nailgun.api.validators.cluster import ClusterValidator
-from nailgun.api.validators.cluster import AttributesValidator
-from nailgun.network.manager import NetworkManager
-from nailgun.api.handlers.base import JSONHandler, content_json
-from nailgun.api.handlers.base import handlers
-from nailgun.api.handlers.node import NodeHandler
-from nailgun.api.handlers.tasks import TaskHandler
 from nailgun.api.serializers.network_configuration \
     import NetworkConfigurationSerializer
-from nailgun.task.helpers import TaskHelper
-from nailgun.task.manager import DeploymentTaskManager
+from nailgun.api.validators.cluster import AttributesValidator
+from nailgun.api.validators.cluster import ClusterValidator
+from nailgun.db import db
+from nailgun.errors import errors
+from nailgun.logger import logger
+from nailgun.network.manager import NetworkManager
+from nailgun import orchestrator
 from nailgun.task.manager import ClusterDeletionManager
+from nailgun.task.manager import DeploymentTaskManager
 
 
 class ClusterHandler(JSONHandler):
+    """Cluster single handler
+    """
+
     fields = (
         "id",
         "name",
         "mode",
         "status",
+        "grouping",
         ("release", "*")
     )
+
     model = Cluster
     validator = ClusterValidator
 
@@ -71,18 +75,28 @@ class ClusterHandler(JSONHandler):
 
     @content_json
     def GET(self, cluster_id):
+        """:returns: JSONized Cluster object.
+        :http: * 200 (OK)
+               * 404 (cluster not found in db)
+        """
         cluster = self.get_object_or_404(Cluster, cluster_id)
         return self.render(cluster)
 
     @content_json
     def PUT(self, cluster_id):
+        """:returns: JSONized Cluster object.
+        :http: * 200 (OK)
+               * 400 (invalid cluster data specified)
+               * 404 (cluster not found in db)
+        """
         cluster = self.get_object_or_404(Cluster, cluster_id)
         data = self.checked_data()
         network_manager = NetworkManager()
 
         for key, value in data.iteritems():
             if key == "nodes":
-                # Todo: sepatate nodes for deletion and addition by set().
+                # TODO(NAME): sepatate nodes
+                #for deletion and addition by set().
                 new_nodes = db().query(Node).filter(
                     Node.id.in_(value)
                 )
@@ -111,11 +125,16 @@ class ClusterHandler(JSONHandler):
 
     @content_json
     def DELETE(self, cluster_id):
+        """:returns: {}
+        :http: * 202 (cluster deletion process launched)
+               * 400 (failed to execute cluster deletion process)
+               * 404 (cluster not found in db)
+        """
         cluster = self.get_object_or_404(Cluster, cluster_id)
         task_manager = ClusterDeletionManager(cluster_id=cluster.id)
         try:
             logger.debug('Trying to execute cluster deletion task')
-            task = task_manager.execute()
+            task_manager.execute()
         except Exception as e:
             logger.warn('Error while execution '
                         'cluster deletion task: %s' % str(e))
@@ -128,11 +147,16 @@ class ClusterHandler(JSONHandler):
 
 
 class ClusterCollectionHandler(JSONHandler):
+    """Cluster collection handler
+    """
 
     validator = ClusterValidator
 
     @content_json
     def GET(self):
+        """:returns: Collection of JSONized Cluster objects.
+        :http: * 200 (OK)
+        """
         return map(
             ClusterHandler.render,
             db().query(Cluster).all()
@@ -140,12 +164,17 @@ class ClusterCollectionHandler(JSONHandler):
 
     @content_json
     def POST(self):
+        """:returns: JSONized Cluster object.
+        :http: * 201 (cluster successfully created)
+               * 400 (invalid cluster data specified)
+               * 409 (cluster with such parameters already exists)
+        """
         # It's used for cluster creating only.
         data = self.checked_data()
 
         cluster = Cluster()
         cluster.release = db().query(Release).get(data["release"])
-        # TODO: use fields
+        # TODO(NAME): use fields
         for field in ('name', 'mode', 'net_manager'):
             if data.get(field):
                 setattr(cluster, field, data.get(field))
@@ -189,13 +218,16 @@ class ClusterCollectionHandler(JSONHandler):
             # Cluster was created in this request,
             # so we no need to use ClusterDeletionManager.
             # All relations wiil be cascade deleted automaticly.
-            # TODO: investigate transactions
+            # TODO(NAME): investigate transactions
             db().delete(cluster)
 
             raise web.badrequest(e.message)
 
 
 class ClusterChangesHandler(JSONHandler):
+    """Cluster changes handler
+    """
+
     fields = (
         "id",
         "name",
@@ -203,6 +235,11 @@ class ClusterChangesHandler(JSONHandler):
 
     @content_json
     def PUT(self, cluster_id):
+        """:returns: JSONized Task object.
+        :http: * 200 (task successfully executed)
+               * 404 (cluster not found in db)
+               * 400 (failed to execute task)
+        """
         cluster = self.get_object_or_404(
             Cluster,
             cluster_id,
@@ -234,6 +271,9 @@ class ClusterChangesHandler(JSONHandler):
 
 
 class ClusterAttributesHandler(JSONHandler):
+    """Cluster attributes handler
+    """
+
     fields = (
         "editable",
     )
@@ -242,6 +282,11 @@ class ClusterAttributesHandler(JSONHandler):
 
     @content_json
     def GET(self, cluster_id):
+        """:returns: JSONized Cluster attributes.
+        :http: * 200 (OK)
+               * 404 (cluster not found in db)
+               * 500 (cluster has no attributes)
+        """
         cluster = self.get_object_or_404(Cluster, cluster_id)
         if not cluster.attributes:
             raise web.internalerror("No attributes found!")
@@ -252,6 +297,12 @@ class ClusterAttributesHandler(JSONHandler):
 
     @content_json
     def PUT(self, cluster_id):
+        """:returns: JSONized Cluster attributes.
+        :http: * 200 (OK)
+               * 400 (wrong attributes data specified)
+               * 404 (cluster not found in db)
+               * 500 (cluster has no attributes)
+        """
         cluster = self.get_object_or_404(Cluster, cluster_id)
         if not cluster.attributes:
             raise web.internalerror("No attributes found!")
@@ -267,12 +318,20 @@ class ClusterAttributesHandler(JSONHandler):
 
 
 class ClusterAttributesDefaultsHandler(JSONHandler):
+    """Cluster default attributes handler
+    """
+
     fields = (
         "editable",
     )
 
     @content_json
     def GET(self, cluster_id):
+        """:returns: JSONized default Cluster attributes.
+        :http: * 200 (OK)
+               * 404 (cluster not found in db)
+               * 500 (cluster has no attributes)
+        """
         cluster = self.get_object_or_404(Cluster, cluster_id)
         attrs = cluster.release.attributes_metadata.get("editable")
         if not attrs:
@@ -281,6 +340,12 @@ class ClusterAttributesDefaultsHandler(JSONHandler):
 
     @content_json
     def PUT(self, cluster_id):
+        """:returns: JSONized Cluster attributes.
+        :http: * 200 (OK)
+               * 400 (wrong attributes data specified)
+               * 404 (cluster not found in db)
+               * 500 (cluster has no attributes)
+        """
         cluster = self.get_object_or_404(
             Cluster,
             cluster_id,
@@ -306,3 +371,69 @@ class ClusterAttributesDefaultsHandler(JSONHandler):
                      ' editable attributes for cluster_id %s were reset'
                      ' to default' % cluster_id)
         return {"editable": cluster.attributes.editable}
+
+
+class ClusterDefaultOrchestratorData(JSONHandler):
+    """Cluster default data which will be passed
+    to orchestrator
+    """
+
+    @content_json
+    def GET(self, cluster_id):
+        """:returns: JSONized default data which will be passed to orchestrator
+        :http: * 200 (OK)
+               * 404 (cluster not found in db)
+        """
+        cluster = self.get_object_or_404(Cluster, cluster_id)
+        return orchestrator.serializers.serialize(cluster)
+
+
+class ClusterOrchestratorData(JSONHandler):
+    """Cluster data which will be passed
+    to orchestrator
+    """
+
+    @content_json
+    def GET(self, cluster_id):
+        """:returns: JSONized data which will be passed to orchestrator
+        :http: * 200 (OK)
+               * 404 (cluster not found in db)
+        """
+        cluster = self.get_object_or_404(Cluster, cluster_id)
+        return cluster.facts
+
+    @content_json
+    def PUT(self, cluster_id):
+        """:returns: JSONized data which will be passed to orchestrator
+        :http: * 200 (OK)
+               * 400 (wrong data specified)
+               * 404 (cluster not found in db)
+        """
+        cluster = self.get_object_or_404(
+            Cluster,
+            cluster_id,
+            log_404=(
+                "warning",
+                "Error: there is no cluster "
+                "with id '{0}' in DB.".format(cluster_id)
+            )
+        )
+        data = self.checked_data()
+        cluster.facts = data
+        db().commit()
+        logger.debug('ClusterDefaultOrchestratorData:'
+                     ' facts for cluster_id {0} were uploaded'
+                     .format(cluster_id))
+        return data
+
+    @content_json
+    def DELETE(self, cluster_id):
+        """:returns: {}
+        :http: * 202 (orchestrator data deletion process launched)
+               * 400 (failed to execute orchestrator data deletion process)
+               * 404 (cluster not found in db)
+        """
+        cluster = self.get_object_or_404(Cluster, cluster_id)
+        cluster.facts = {}
+        db().commit()
+        raise web.accepted(data="{}")

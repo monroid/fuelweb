@@ -14,30 +14,54 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import re
-import uuid
-import string
-import math
-from datetime import datetime
-from random import choice
 from copy import deepcopy
+from random import choice
+import string
+import uuid
 
-import web
-from netaddr import IPNetwork
-from sqlalchemy import Column, UniqueConstraint, Table
-from sqlalchemy import Integer, String, Unicode, Text, Boolean, Float
+from sqlalchemy import Boolean
+from sqlalchemy import Column
+from sqlalchemy import Float
+from sqlalchemy import Integer
+from sqlalchemy import String
+from sqlalchemy import Text
+from sqlalchemy import Unicode
+from sqlalchemy import UniqueConstraint
 from sqlalchemy import ForeignKey, Enum, DateTime
-from sqlalchemy import create_engine
 from sqlalchemy.orm import relationship, backref
 from sqlalchemy.ext.declarative import declarative_base
+import web
 
-from nailgun.logger import logger
-from nailgun.db import db
-from nailgun.volumes.manager import VolumeManager
 from nailgun.api.fields import JSON
+from nailgun.db import db
+from nailgun.logger import logger
 from nailgun.settings import settings
+from nailgun.volumes.manager import VolumeManager
+
 
 Base = declarative_base()
+
+
+class NodeRoles(Base):
+    __tablename__ = 'node_roles'
+    id = Column(Integer, primary_key=True)
+    role = Column(Integer, ForeignKey('roles.id', ondelete="CASCADE"))
+    node = Column(Integer, ForeignKey('nodes.id'))
+
+
+class PendingNodeRoles(Base):
+    __tablename__ = 'pending_node_roles'
+    id = Column(Integer, primary_key=True)
+    role = Column(Integer, ForeignKey('roles.id', ondelete="CASCADE"))
+    node = Column(Integer, ForeignKey('nodes.id'))
+
+
+class Role(Base):
+    __tablename__ = 'roles'
+    id = Column(Integer, primary_key=True)
+    release_id = Column(Integer, ForeignKey('releases.id', ondelete='CASCADE'),
+                        nullable=False)
+    name = Column(String(50), nullable=False)
 
 
 class Release(Base):
@@ -62,7 +86,20 @@ class Release(Base):
     networks_metadata = Column(JSON, default=[])
     attributes_metadata = Column(JSON, default={})
     volumes_metadata = Column(JSON, default={})
+    roles_metadata = Column(JSON, default={})
+    role_list = relationship("Role", backref="release")
     clusters = relationship("Cluster", backref="release")
+
+    @property
+    def roles(self):
+        return [role.name for role in self.role_list]
+
+    @roles.setter
+    def roles(self, roles):
+        for role in roles:
+            if role not in self.roles:
+                self.role_list.append(Role(name=role, release=self))
+        db().commit()
 
 
 class ClusterChanges(Base):
@@ -83,9 +120,11 @@ class ClusterChanges(Base):
 
 class Cluster(Base):
     __tablename__ = 'clusters'
-    MODES = ('singlenode', 'multinode', 'ha')
+    MODES = ('multinode', 'ha_full', 'ha_compact')
     STATUSES = ('new', 'deployment', 'operational', 'error', 'remove')
     NET_MANAGERS = ('FlatDHCPManager', 'VlanManager')
+    GROUPING = ('roles', 'hardware', 'both')
+    facts = Column(JSON, default={})
     id = Column(Integer, primary_key=True)
     mode = Column(
         Enum(*MODES, name='cluster_mode'),
@@ -101,6 +140,11 @@ class Cluster(Base):
         Enum(*NET_MANAGERS, name='cluster_net_manager'),
         nullable=False,
         default='FlatDHCPManager'
+    )
+    grouping = Column(
+        Enum(*GROUPING, name='cluster_grouping'),
+        nullable=False,
+        default='roles'
     )
     name = Column(Unicode(50), unique=True, nullable=False)
     release_id = Column(Integer, ForeignKey('releases.id'), nullable=False)
@@ -119,6 +163,10 @@ class Cluster(Base):
     notifications = relationship("Notification", backref="cluster")
     network_groups = relationship("NetworkGroup", backref="cluster",
                                   cascade="delete")
+
+    @property
+    def is_ha_mode(self):
+        return self.mode in ('ha_full', 'ha_compact')
 
     @property
     def full_name(self):
@@ -170,6 +218,22 @@ class Cluster(Base):
         map(db().delete, chs.all())
         db().commit()
 
+    def prepare_for_deployment(self):
+        from nailgun.network.manager import NetworkManager
+        from nailgun.task.helpers import TaskHelper
+
+        nodes = set(TaskHelper.nodes_to_deploy(self) +
+                    TaskHelper.nodes_in_provisioning(self))
+
+        TaskHelper.update_slave_nodes_fqdn(nodes)
+
+        nodes_ids = sorted([n.id for n in nodes])
+        if nodes_ids:
+            netmanager = NetworkManager()
+            netmanager.assign_ips(nodes_ids, 'management')
+            netmanager.assign_ips(nodes_ids, 'public')
+            netmanager.assign_ips(nodes_ids, 'storage')
+
 
 class Node(Base):
     __tablename__ = 'nodes'
@@ -180,11 +244,6 @@ class Node(Base):
         'provisioned',
         'deploying',
         'error'
-    )
-    NODE_ROLES = (
-        'controller',
-        'compute',
-        'cinder',
     )
     NODE_ERRORS = (
         'deploy',
@@ -207,7 +266,6 @@ class Node(Base):
     platform_name = Column(String(150))
     progress = Column(Integer, default=0)
     os_platform = Column(String(150))
-    role = Column(Enum(*NODE_ROLES, name='node_role'))
     pending_addition = Column(Boolean, default=False)
     pending_deletion = Column(Boolean, default=False)
     changes = relationship("ClusterChanges", backref="node")
@@ -215,6 +273,9 @@ class Node(Base):
     error_msg = Column(String(255))
     timestamp = Column(DateTime, nullable=False)
     online = Column(Boolean, default=True)
+    role_list = relationship("Role", secondary=NodeRoles.__table__)
+    pending_role_list = relationship("Role",
+                                     secondary=PendingNodeRoles.__table__)
     attributes = relationship("NodeAttributes",
                               backref=backref("node"),
                               uselist=False)
@@ -240,7 +301,8 @@ class Node(Base):
 
     @property
     def needs_redeploy(self):
-        return self.status == 'error' and not self.pending_deletion
+        return (self.status == 'error' or len(self.pending_roles)) and \
+            not self.pending_deletion
 
     @property
     def needs_redeletion(self):
@@ -252,8 +314,41 @@ class Node(Base):
 
     @property
     def full_name(self):
-        return u'%s (id=%s, mac=%s, role=%s)' % (
-            self.name, self.id, self.mac, self.role)
+        return u'%s (id=%s, mac=%s)' % (self.name, self.id, self.mac)
+
+    @property
+    def roles(self):
+        return [role.name for role in self.role_list]
+
+    @roles.setter
+    def roles(self, new_roles):
+        available_roles = []
+        try:
+            available_roles = self.cluster.release.role_list
+        except AttributeError:
+            pass
+        old_roles = self.roles
+        for role in new_roles:
+            if role not in old_roles:
+                new_role = filter(lambda r: r.name == role, available_roles)
+                if new_role:
+                    self.role_list.append(new_role[0])
+        db().commit()
+
+    @property
+    def pending_roles(self):
+        return [role.name for role in self.pending_role_list]
+
+    @pending_roles.setter
+    def pending_roles(self, new_roles):
+        available_roles = []
+        try:
+            available_roles = self.cluster.release.role_list
+        except AttributeError:
+            pass
+        self.pending_role_list = filter(lambda r: r.name in new_roles,
+                                        available_roles)
+        db().commit()
 
     def _check_interface_has_required_params(self, iface):
         return bool(iface.get('name') and iface.get('mac'))
@@ -447,7 +542,7 @@ class AttributesGenerators(object):
     def password(cls, arg=None):
         try:
             length = int(arg)
-        except:
+        except Exception:
             length = 8
         chars = string.letters + string.digits
         return u''.join([choice(chars) for _ in xrange(length)])
@@ -513,7 +608,8 @@ class Attributes(Base):
     def _dict_merge(self, a, b):
         '''recursively merges dict's. not just simple a['key'] = b['key'], if
         both a and bhave a key who's value is a dict then dict_merge is called
-        on both values and the result stored in the returned dictionary.'''
+        on both values and the result stored in the returned dictionary.
+        '''
         if not isinstance(b, dict):
             return b
         result = deepcopy(a)
