@@ -181,26 +181,25 @@ class CiBase(object):
         return self._router('nat')
 
     def _router(self, router_name):
-        return str(
-            IPNetwork(
-                self.environment().network_by_name(router_name).ip_network)[1])
+        return str(IPNetwork(self.environment().network_by_name(router_name).ip_network)[1])
 
     def get_host_node_ip(self):
         return self.internal_router()
 
     def internal_network(self):
-        return str(
-            IPNetwork(
-                self.environment().network_by_name('internal').ip_network))
+        return self.get_network()
 
     def internal_net_mask(self):
-        return str(IPNetwork(
-            self.environment().network_by_name('internal').ip_network).netmask)
+        return self.get_net_mask()
 
     def public_net_mask(self):
-        return str(IPNetwork(
-            self.environment().network_by_name('public').ip_network).netmask)
+        return self.get_net_mask("public")
+
+    def get_net_mask(self, net_name="internal"):
+        return str(IPNetwork(self.environment().network_by_name(net_name).ip_network).netmask)
 
     def public_network(self):
-        return str(
-            IPNetwork(self.environment().network_by_name('public').ip_network))
+        return self.get_network("public")
+
+    def get_network(self, net_name="internal"):
+        return str(IPNetwork(self.environment().network_by_name(net_name).ip_network))

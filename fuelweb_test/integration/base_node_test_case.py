@@ -114,12 +114,44 @@ class BaseNodeTestCase(BaseTestCase):
     @logwrap
     def configure_cluster(self, cluster_id, nodes_dict):
         self.update_nodes(cluster_id, nodes_dict, True, False)
+        self.change_network(cluster_id)
         # TODO: update network configuration
 
     @logwrap
+    def change_network(self, cluster_id):
+        networks = self.client.get_networks(cluster_id).get('networks')
+
+        admin_public = self.ci().nodes().admin.get_ip_address_by_network_name("public")
+        admin_internal = self.ci().nodes().admin.get_ip_address_by_network_name("internal")
+        admin_private = self.ci().nodes().admin.get_ip_address_by_network_name("private")
+
+        for network in networks:
+            if "floating" == network['name']:
+                net_name = "public"
+                network['ip_ranges'] = [[".".join(admin_public.split(".")[:-1]+['101']), ".".join(admin_public.split(".")[:-1]+['254'])]]
+            elif "public" == network['name']:
+                net_name = "public"
+                network['ip_ranges'] = [[admin_public, ".".join(admin_public.split(".")[:-1]+['100'])]]
+            elif "management" == network['name']:
+                net_name = "internal"
+                network['ip_ranges'] = [[admin_internal, ".".join(admin_internal.split(".")[:-1]+['100'])]]
+            elif "storage" == network['name']:
+                net_name = "internal"
+                network['ip_ranges'] = [[".".join(admin_internal.split(".")[:-1]+['101']), ".".join(admin_internal.split(".")[:-1]+['254'])]]
+            elif "fixed" == network['name']:
+                net_name = "private"
+                network['ip_ranges'] = [[admin_private, ".".join(admin_private.split(".")[:-1]+['254'])]]
+
+            network['netmask'] = self.ci().get_net_mask(net_name)
+            network['cidr'] = self.ci().get_network(net_name)
+            network['gateway'] = self.ci()._router(net_name)
+            network['vlan_start'] = 0
+
+        self.client.update_network(cluster_id=1, networks=networks)
+
+    @logwrap
     def basic_provisioning(self, cluster_id, nodes_dict, port=5514):
-        self.client.add_syslog_server(
-            cluster_id, self.ci().get_host_node_ip(), port)
+        self.client.add_syslog_server(cluster_id, self.ci().get_host_node_ip(), port)
 
         self.bootstrap_nodes(self.devops_nodes_by_names(nodes_dict.keys()))
         self.configure_cluster(cluster_id, nodes_dict)
@@ -410,18 +442,14 @@ class BaseNodeTestCase(BaseTestCase):
             [{'id': node_id, 'interfaces': interfaces}])
 
     @logwrap
-    def update_vlan_network_fixed(
-            self, cluster_id, amount=1, network_size=256):
+    def update_vlan_network_fixed(self, cluster_id, amount=1, network_size=256):
         network_list = self.client.get_networks(cluster_id)['networks']
         for network in network_list:
             if network["name"] == 'fixed':
                 network['amount'] = amount
                 network['network_size'] = network_size
 
-        self.client.update_network(
-            cluster_id,
-            networks=network_list,
-            net_manager=NETWORK_MANAGERS['vlan'])
+        self.client.update_network(cluster_id, networks=network_list, net_manager=NETWORK_MANAGERS['vlan'])
 
     @logwrap
     def update_redhat_credentials(

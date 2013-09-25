@@ -51,11 +51,14 @@ class CiFuelWeb(CiBase):
         for name in INTERFACE_ORDER:
             ip_networks = [IPNetwork(x) for x in POOLS.get(name)[0].split(',')]
             new_prefix = int(POOLS.get(name)[1])
-            pool = self.manager.create_network_pool(
-                networks=ip_networks, prefix=int(new_prefix))
-            networks.append(self.manager.network_create(
-                name=name, environment=environment, pool=pool,
-                forward=FORWARDING.get(name), has_dhcp_server=DHCP.get(name)))
+
+            pool = self.manager.create_network_pool(networks=ip_networks, prefix=int(new_prefix))
+
+            networks.append(self.manager.network_create(name=name,
+                                                        environment=environment,
+                                                        pool=pool,
+                                                        forward=FORWARDING.get(name),
+                                                        has_dhcp_server=DHCP.get(name)))
 
         for name in self.node_roles().admin_names:
             self.describe_admin_node(name, networks)
@@ -92,6 +95,9 @@ class CiFuelWeb(CiBase):
             " hostname=%(hostname)s\n"
             " <Enter>\n"
         ) % params
+
+        print "IN KEYS!!!", node.get_ip_address_by_network_name('internal')
+
         return keys
 
     def enable_nat_for_admin_node(self):
@@ -126,11 +132,11 @@ class CiFuelWeb(CiBase):
 
     def setup_environment(self):
         # start admin node
-        admin = self.nodes().admin
+        admin = self.nodes().admins[0]
         admin.disk_devices.get(device='cdrom').volume.upload(ISO_PATH)
         self.environment().start(self.nodes().admins)
         # update network parameters at boot screen
-        time.sleep(20)
+        time.sleep(30)
         admin.send_keys(self.get_keys(admin))
         # wait while installation complete
         admin.await('internal', timeout=10 * 60)
@@ -138,3 +144,8 @@ class CiFuelWeb(CiBase):
         time.sleep(10)
         self.enable_nat_for_admin_node()
         self.environment().snapshot(EMPTY_SNAPSHOT)
+
+
+if __name__ == "__main__":
+    e = CiFuelWeb()
+    print e.internal_router()

@@ -15,7 +15,7 @@
 
 import os
 
-ISO_PATH = os.environ.get('ISO_PATH')
+ISO_PATH = os.environ.get('ISO_PATH', '/home/alan/Downloads/fuellib_resttest.iso')
 EMPTY_SNAPSHOT = os.environ.get('EMPTY_SNAPSHOT', 'empty')
 OPENSTACK_RELEASE = os.environ.get('OPENSTACK_RELEASE', 'Grizzly')
 
@@ -73,4 +73,4 @@ NETWORK_MANAGERS = {
 }
 
 CLEAN = os.environ.get('CLEAN', 'true') == 'true'
-LOGS_DIR = os.environ.get('LOGS_DIR')
+LOGS_DIR = os.environ.get('LOGS_DIR', '/home/alan/fuelweb_logs')

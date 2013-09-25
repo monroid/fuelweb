@@ -446,5 +446,33 @@ class TestNode(BaseNodeTestCase):
         # self.ci().environment().snapshot(
         #     name=EMPTY_SNAPSHOT, description=EMPTY_SNAPSHOT, force=True)
 
+    @logwrap
+    @fetch_logs
+    def test_networks(self):
+        a = self.client.get_networks(1).get('networks')
+
+        for i in a:
+            if i['name'] in ["floating", "public"]:
+                net_name = "public"
+                admin_public = self.ci().nodes().admin.get_ip_address_by_network_name("public")
+                i['ip_ranges'] = [[".".join(admin_public.split(".")[:-1]+['101']), ".".join(admin_public.split(".")[:-1]+['254'])]] if "floating" in i["name"] else [[admin_public, ".".join(admin_public.split(".")[:-1]+['100'])]]
+            elif i['name'] in ["management", "storage"]:
+                net_name = "internal"
+                admin_internal = self.ci().nodes().admin.get_ip_address_by_network_name("internal")
+                i['ip_ranges'] = [[".".join(admin_internal.split(".")[:-1]+['101']), ".".join(admin_internal.split(".")[:-1]+['254'])]] if "management" in i["name"] else [[admin_internal, ".".join(admin_internal.split(".")[:-1]+['100'])]]
+            elif i['name'] in ["fixed"]:
+                net_name = "private"
+                admin_private = self.ci().nodes().admin.get_ip_address_by_network_name("private")
+                i['ip_ranges'] = [[admin_private, ".".join(admin_private.split(".")[:-1]+['254'])]]
+
+            i['netmask'] = self.ci().get_net_mask(net_name)
+            i['cidr'] = self.ci().get_network(net_name)
+            i['gateway'] = self.ci()._router(net_name)
+            i['vlan_start'] = None
+
+        self.client.update_network(cluster_id=1, networks=a)
+
+
+
 if __name__ == '__main__':
     unittest.main()

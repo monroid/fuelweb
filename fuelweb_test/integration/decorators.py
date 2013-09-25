@@ -24,10 +24,13 @@ from fuelweb_test.settings import LOGS_DIR
 
 def save_logs(ip, filename):
     logging.info('Saving logs to "%s" file' % filename)
-    with open(filename, 'w') as f:
-        f.write(
-            urllib2.urlopen("http://%s:8000/api/logs/package" % ip).read()
-        )
+    try:
+        with open(filename, 'w') as f:
+            f.write(
+                urllib2.urlopen("http://%s:8000/api/logs/package" % ip).read()
+            )
+    except urllib2.HTTPError, e:
+        logging.error(e)
 
 
 def fetch_logs(func):
@@ -91,3 +94,7 @@ def json_parse(func):
         response = func(*args, **kwargs)
         return json.loads(response.read())
     return wrapped
+
+
+if __name__ == "__main__":
+    save_logs("10.108.0.2", "test")
